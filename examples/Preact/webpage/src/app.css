@@ -1,0 +1,51 @@
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+#app {
+  min-height: 100vh;
+  padding: 2rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Footer styles for status */
+footer {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  background: #222;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  flex-wrap: wrap;
+  align-items: center;
+  z-index: 100;
+  gap: 0.5em;
+  padding: 0.5em 0;
+}
+
+/* Default text alignment inside the centered containers */
+#app, main {
+  text-align: center;
+}
+
+.card {
+  background-color: #1a1a1a;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1rem;
+  max-width: 400px;
+  box-sizing: border-box;
+}
+

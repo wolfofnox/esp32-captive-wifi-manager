@@ -1,0 +1,30 @@
+# IDE specific
+.vscode/.browse.c_cpp.db*
+.vscode/settings.json
+.vscode/launch.json
+.vscode/c_cpp_properties.json
+.vscode/ipch/
+.devcontainer/
+
+# ESP-IDF build directories
+build/
+
+# ESP-IDF managed components
+managed_components/
+
+# ESP-IDF config and lock files
+dependencies.lock
+sdkconfig
+sdkconfig.old
+
+# Binary output files
+*.bin
+*.elf
+*.map
+
+# Vite, Node.js, Esp32EmuConsole
+node_modules/
+vite.config.js
+package.json
+package-lock.json
+rules.json

@@ -4,6 +4,7 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "Wifi.h"
+#include "time.h"
 
 
 // --- Define variables, classes ---
@@ -75,8 +76,10 @@ esp_err_t status_json_handler(httpd_req_t *req) {
     char json[300];
     int free_heap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
     int total_heap = heap_caps_get_total_size(MALLOC_CAP_DEFAULT);
-    snprintf(json, sizeof(json), "{\"uptime\": %lli, \"freeHeap\": %d, \"totalHeap\": %d, \"version\": \"%s\"}",
-             (esp_timer_get_time() - bootTime) / 1000, free_heap, total_heap, "EXAMPLE");
+    time_t now;
+    time(&now);
+    snprintf(json, sizeof(json), "{\"uptime\": %lli, \"freeHeap\": %d, \"totalHeap\": %d, \"version\": \"%s\", \"time\": \"%lld\"}",
+             (esp_timer_get_time() - bootTime) / 1000, free_heap, total_heap, "EXAMPLE", (long long)now);
     ESP_LOGD(TAG, "JSON data requested: %s", json);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json, strlen(json));

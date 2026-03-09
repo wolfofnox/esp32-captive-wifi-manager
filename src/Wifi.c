@@ -30,6 +30,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
+#include "time.h"
+#include "esp_sntp.h"
+
 #pragma region Variables & Config
 
 /** @brief NVS namespace used for storing WiFi credentials and settings */
@@ -82,6 +85,9 @@ static const int RECONECT_BIT = BIT4;
 
 /** @brief Event bit to trigger mDNS configuration update */
 static const int mDNS_CHANGE_BIT = BIT5;
+
+/** @brief Event bit to trigger time synchronization */
+static const int SYNC_TIME_BIT = BIT6;
 
 /** @brief HTTP server handle, NULL when server is not running */
 httpd_handle_t server = NULL;
@@ -307,6 +313,14 @@ wifi_config_t sta_wifi_config(captive_portal_config *cfg);
  * @return WiFi configuration structure for captive AP mode
  */
 wifi_config_t captive_ap_wifi_config(captive_portal_config *cfg);
+
+/**
+ * @brief Synchronize system time with SNTP server.
+ * 
+ * @param wait_for_sync If true, waits for time synchronization to complete
+ * @return ESP_OK on success, error code on failure
+ */
+esp_err_t sync_time(bool wait_for_sync);
 
 // FreeRTOS task functions
 
@@ -620,6 +634,46 @@ esp_err_t mount_sd_card() {
     }
     closedir(dir);
 
+    return ESP_OK;
+}
+
+/**
+ * @brief Synchronize system time with SNTP server.
+ * 
+ * Initializes the SNTP client to synchronize time with "pool.ntp.org". If
+ * wait_for_sync is true, the function will block until the time is synchronized
+ * or a timeout occurs.
+ * 
+ * @param wait_for_sync Whether to wait for time synchronization
+ * @return ESP_OK on successful synchronization
+ * @return ESP_ERR_TIMEOUT if synchronization fails after waiting
+ */
+esp_err_t sync_time(bool wait_for_sync) {
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+
+    if (wait_for_sync) {
+        // Wait for time to be set
+        time_t now = 0;
+        struct tm timeinfo = {0};
+        int retry = 0;
+        const int retry_count = 10;
+        while (timeinfo.tm_year < (2020 - 1900) && retry < retry_count) {
+            ESP_LOGI(TAG, "Waiting for SNTP time synchronization... (%d/%d)", retry + 1, retry_count);
+            vTaskDelay(2000 / portTICK_PERIOD_MS);
+            time(&now);
+            localtime_r(&now, &timeinfo);
+            retry++;
+        }
+        if (retry == retry_count) {
+            ESP_LOGW(TAG, "SNTP time synchronization failed after %d attempts", retry_count);
+            return ESP_ERR_TIMEOUT;
+        } else {
+            ESP_LOGI(TAG, "SNTP time synchronized successfully");
+            return ESP_OK;
+        }
+    }
     return ESP_OK;
 }
 
@@ -1224,7 +1278,7 @@ void wifi_event_group_listener_task(void *pvParameter) {
         // Wait for any relevant event bit
         EventBits_t eventBits = xEventGroupWaitBits(
             wifi_event_group,
-            SWITCH_TO_STA_BIT | SWITCH_TO_AP_BIT | SWITCH_TO_CAPTIVE_AP_BIT | RECONECT_BIT | mDNS_CHANGE_BIT,
+            SWITCH_TO_STA_BIT | SWITCH_TO_AP_BIT | SWITCH_TO_CAPTIVE_AP_BIT | RECONECT_BIT | mDNS_CHANGE_BIT | SYNC_TIME_BIT,
             pdFALSE, pdFALSE, portMAX_DELAY);
         ESP_LOGD(TAG, "Received event bits: %s%s%s%s%s%s%s%s%s%s",
             eventBits & BIT9 ? "1" : "0",
@@ -1342,6 +1396,13 @@ void wifi_event_group_listener_task(void *pvParameter) {
                 ESP_LOGI(TAG, "mDNS removed");
             }
             xEventGroupClearBits(wifi_event_group, mDNS_CHANGE_BIT);
+        }
+
+        // Sync time with NTP server
+        if (eventBits & SYNC_TIME_BIT && eventBits & CONNECTED_BIT) {
+            ESP_LOGI(TAG, "Syncing time with NTP server...");
+            sync_time(true);
+            xEventGroupClearBits(wifi_event_group, SYNC_TIME_BIT);
         }
     }
 } 

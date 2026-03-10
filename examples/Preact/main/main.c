@@ -8,8 +8,7 @@
 
 // --- Define variables, classes ---
 const char *TAG = "main";  ///< Log tag for this module
-uint8_t sliderBinaryValue = 0;
-uint8_t sliderJSONValue = 0;
+uint8_t sliderValue = 0;
 int64_t bootTime;
 
 // --- Define functions ---
@@ -41,8 +40,8 @@ esp_err_t control_post_handler(httpd_req_t *req) {
         char param[32];
         if (httpd_query_key_value(buf, "slider", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
-            sliderJSONValue = (uint8_t)atoi(param);
-            ESP_LOGI(TAG, "JSON slider updated to %d", sliderJSONValue);
+            sliderValue = (uint8_t)atoi(param);
+            ESP_LOGI(TAG, "JSON slider updated to %d", sliderValue);
         }
         if (httpd_query_key_value(buf, "text", param, sizeof(param)) == ESP_OK) {
             url_decode(param);

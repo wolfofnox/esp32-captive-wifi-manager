@@ -5,6 +5,10 @@
 #include "esp_timer.h"
 #include "Wifi.h"
 #include "time.h"
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include "esp_http_server.h"
 
 
 // --- Define variables, classes ---
@@ -33,6 +37,90 @@ typedef struct __attribute__((packed)) {
     int16_t value;       // Control value (2 bytes)
 } ws_control_packet_t;
 
+static const char *k_supported_protocols[] = {
+    "binary.v1"
+};
+static const size_t k_supported_protocols_count =
+sizeof(k_supported_protocols) / sizeof(k_supported_protocols[0]);
+
+// Trim leading/trailing spaces in-place; returns pointer to trimmed start.
+static char *trim(char *s) {
+    while (*s && isspace((unsigned char)*s)) s++;
+    if (*s == 0) return s;
+    char *end = s + strlen(s) - 1;
+    while (end > s && isspace((unsigned char)*end)) end--;
+    end[1] = '\0';
+    return s;
+}
+
+// Return the first supported protocol found in the client's header list.
+// The returned pointer is one of the constants in k_supported_protocols.
+static const char *pick_subprotocol_from_header(const char *header_value) {
+    if (!header_value || !*header_value) return NULL;
+
+    // Copy header so we can tokenize safely.
+    char *buf = strdup(header_value);
+    if (!buf) return NULL;
+
+    const char *selected = NULL;
+    char *saveptr = NULL;
+
+    // Client list is comma-separated per spec.
+    for (char *token = strtok_r(buf, ",", &saveptr);
+         token != NULL;
+         token = strtok_r(NULL, ",", &saveptr)) {
+
+        char *proto = trim(token);
+
+        for (size_t i = 0; i < k_supported_protocols_count; i++) {
+            if (strcasecmp(proto, k_supported_protocols[i]) == 0) {
+                selected = k_supported_protocols[i];
+                break;
+            }
+        }
+        if (selected) break; // pick first match in client order
+    }
+
+    free(buf);
+    return selected;
+}
+
+// Pre-handshake callback: decide protocol or reject
+static esp_err_t ws_pre_handshake_cb(httpd_req_t *req) {
+    // Read Sec-WebSocket-Protocol header (if present)
+    size_t len = httpd_req_get_hdr_value_len(req, "Sec-WebSocket-Protocol");
+    if (len == 0) {
+        // Client sent no protocol list; accept connection without a protocol.
+        return ESP_OK;
+    }
+
+    char *hdr = malloc(len + 1);
+    if (!hdr) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Out of memory");
+    }
+
+    esp_err_t err = httpd_req_get_hdr_value_str(
+        req, "Sec-WebSocket-Protocol", hdr, len + 1);
+    if (err != ESP_OK) {
+        free(hdr);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Invalid WebSocket subprotocol header");
+    }
+
+    const char *selected = pick_subprotocol_from_header(hdr);
+    free(hdr);
+
+    if (!selected) {
+        // None of the client's protocols are supported
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Unsupported WebSocket subprotocol");
+    }
+
+    // Set the chosen protocol in the handshake response
+    httpd_resp_set_hdr(req, "Sec-WebSocket-Protocol", selected);
+    return ESP_OK;
+}
 
 // Helper: send a 1-byte event back to the client that sent the request
 static esp_err_t send_ws_event_to_req(httpd_req_t *req, uint8_t eventType)
@@ -76,10 +164,8 @@ esp_err_t status_json_handler(httpd_req_t *req) {
     char json[300];
     int free_heap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
     int total_heap = heap_caps_get_total_size(MALLOC_CAP_DEFAULT);
-    time_t now;
-    time(&now);
-    snprintf(json, sizeof(json), "{\"uptime\": %lli, \"freeHeap\": %d, \"totalHeap\": %d, \"version\": \"%s\", \"time\": \"%lld\"}",
-             (esp_timer_get_time() - bootTime) / 1000, free_heap, total_heap, "EXAMPLE", (long long)now);
+    snprintf(json, sizeof(json), "{\"uptime\": %lli, \"freeHeap\": %d, \"totalHeap\": %d, \"version\": \"%s\"}",
+             (esp_timer_get_time() - bootTime) / 1000, free_heap, total_heap, "EXAMPLE");
     ESP_LOGD(TAG, "JSON data requested: %s", json);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json, strlen(json));
@@ -126,8 +212,7 @@ esp_err_t control_post_handler(httpd_req_t *req) {
 
 esp_err_t ws_handler(httpd_req_t *req) {
     if (req->method == HTTP_GET) {
-        // Upgrade to WebSocket
-        return ESP_OK;
+        return ws_pre_handshake_cb(req);
     }
 
     httpd_ws_frame_t ws_pkt;

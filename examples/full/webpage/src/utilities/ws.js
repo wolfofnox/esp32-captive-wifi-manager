@@ -21,7 +21,7 @@ function setupWebSocket() {
         return;
     }
     message('info', 'Setting up WebSocket connection...', 5000);
-    ws = new WebSocket(`ws://${location.host}/ws`);
+    ws = new WebSocket(`ws://${location.host}/ws`, 'binary.v1');
     ws.onopen = () => {
         console.log('WebSocket connected');
         message('info', 'WebSocket connected', 3000);

@@ -7,6 +7,31 @@ export default function WebSocket() {
     const [sliderJsonValue, setSliderJsonValue] = useState(0);
     const [textInputValue, setTextInputValue] = useState('');
 
+    const wsRef = useRef(null);
+
+    useEffect(() => {
+        console.log('[WS page] mount - creating client');
+        const wsClient = new WsClient("/ws");
+        wsRef.current = wsClient;
+
+        wsClient.onOpen = () => {
+            console.log('[WS client] onOpen - sending reload request');
+            const p = wsClient.request("reload");
+            p.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
+            p.then((msg) => console.log('WebSocket request completed with message:', msg)).catch((err) => console.error('WebSocket request failed with error:', err));
+        };
+
+        wsClient.open();
+
+        return () => {
+            console.log('[WS page] unmount - closing client');
+            wsClient.close();
+            wsRef.current = null;
+        }
+    }, []);
+
+    // initial request is sent from client.onOpen above
+
     useEffect(() => {
         // Send binary slider value
     }, [sliderBinValue]);
@@ -41,7 +66,7 @@ export default function WebSocket() {
             <div class="text-input-group">
                 <label for="textinput">Text Input:</label>
                 <input type="text" id="textinput" value={textInputValue} onInput={(e) => setTextInputValue(e.target.value)}></input>
-                <button id="sendTextBtn" onClick={ null }>Send</button>
+                <button id="sendTextBtn" onClick={async () => await wsRef.current.cmd("text", { value: textInputValue }).ack}>Send</button>
             </div>
         </div>
     )

@@ -1,5 +1,6 @@
-import { sendWSBinary, sendWSMessage, sendWSEvent } from "../utilities/ws.js"
-import { useState, useEffect } from 'preact/hooks';
+import { WsClient } from "../utilities/ws.js"
+import { useState, useEffect, useRef } from 'preact/hooks';
+
 
 export default function WebSocket() {
     const [sliderBinValue, setSliderBinValue] = useState(0);
@@ -7,27 +8,12 @@ export default function WebSocket() {
     const [textInputValue, setTextInputValue] = useState('');
 
     useEffect(() => {
-        sendWSBinary(1, parseInt(sliderBinValue));
+        // Send binary slider value
     }, [sliderBinValue]);
 
     useEffect(() => {
-        sendWSMessage(JSON.stringify({ type: 'slider', value: parseInt(sliderJsonValue) }));
+        // Send JSON slider value
     }, [sliderJsonValue]);
-
-    window.handleWSBinaryData = (type, value) => {
-        if (type === 1) { // Binary slider update
-            setSliderBinValue(value);
-        } else if (type === 2) { // JSON slider update
-            setSliderJsonValue(value);
-        } else {
-            console.warn('Unknown binary message type:', type);
-        }
-    };
-
-    window.onWSOpen = () => {
-        sendWSEvent(2); // RELOAD
-        sendWSMessage("reload"); // For text-based matching in rules of Esp32EmuConsole
-    };
 
     return (
         <div class="card">
@@ -55,7 +41,7 @@ export default function WebSocket() {
             <div class="text-input-group">
                 <label for="textinput">Text Input:</label>
                 <input type="text" id="textinput" value={textInputValue} onInput={(e) => setTextInputValue(e.target.value)}></input>
-                <button id="sendTextBtn" onClick={() => sendWSMessage(JSON.stringify({ type: 'text', value: textInputValue }))}>Send</button>
+                <button id="sendTextBtn" onClick={ null }>Send</button>
             </div>
         </div>
     )

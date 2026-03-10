@@ -1,114 +1,417 @@
-import { message } from '../utilities/message.jsx';
+// WebSocket client with request/response, events, reconnect hooks.
+// Uses ES module export so you can import { WsClient } from './wsClient.js'
+//
+// For protocol details, see protocol.md. This client abstracts the protocol details
+// and provides a higher-level API for sending requests/commands and handling
+// responses/events.
 
-// constants for WebSocket binary events and values
-const WS_event = {
-    EVENT_NONE: 0,
-    EVENT_TIMEOUT: 1,
-    EVENT_RELOAD: 2,
-    EVENT_REVERT_SETTINGS: 3
-}
 
-const WS_value = {
-    VALUE_NONE: 0,
-    SLIDER_BINARY: 1,
-    SLIDER_JSON: 2
-}
+import { message } from "./message";
 
-let ws = {}
-function setupWebSocket() {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        console.warn('WebSocket already connected');
-        return;
-    }
-    message('info', 'Setting up WebSocket connection...', 5000);
-    ws = new WebSocket(`ws://${location.host}/ws`, 'binary.v1');
-    ws.onopen = () => {
-        console.log('WebSocket connected');
-        message('info', 'WebSocket connected', 3000);
-        if (window.onWSOpen) {
-            window.onWSOpen();
+// Event/message/cmd+req handler - setter, usage, typedef, call in _onMessage
+//    onEvent(msg)
+//    onCmd onRequest onSubscribe onDelta - (payload) (without metadata)
+// messages: cmd, request {what fields}, subscribe {id, what fields}, delta
+
+// Time sync
+// common helpers - request snapshot, call cmd...
+// review protocol
+
+const PROTOCOL_VER = 1;
+
+// small Subscription handle
+class Subscription {
+  constructor(name, params, client, reqId) {
+    this._client = client;
+    this._name = name;
+    this._params = params;
+    this._reqId = reqId;
+    this.id = null;
+    this.snapshot = null;
+    this._dListeners = new Set();
+    this._canceled = false;
+    let res, rej;
+    this.onceSnapshot = new Promise((r, j) => { res = r; rej = j; });
+    this._resolveOnceSnapshot = res;
+    this._rejectOnceSnapshot = rej;
+  }
+
+  onDelta(cb) {
+    this._dListeners.add(cb);
+    return () => { this._dListeners.delete(cb); };
+  }
+
+  _emitDelta(payload) {
+    try {
+      for (const cb of Array.from(this._dListeners)) cb(payload, this.id);
+    } catch (e) { console.warn('subscription delta handler error', e); }
+  }
+
+  unsubscribe() {
+    // pending subscribe (no assigned id yet)
+      if (sub.id == null && sub._reqId != null && this._pendingSubs.has(sub._reqId)) {
+        this._pendingSubs.delete(sub._reqId);
+        sub._canceled = true;
+        this._subDescriptors.delete(sub);
+        // cancel underlying promise if present
+        const p = this.pending.get(sub._reqId);
+        if (p) {
+          clearTimeout(p.timer);
+          try { if (p.reject) p.reject(new Error('cancelled')); } catch (e) {}
+          try { if (p.ackReject) p.ackReject(new Error('cancelled')); } catch (e) {}
+          this.pending.delete(sub._reqId);
+          this.inFlight--;
+          this._drain();
         }
+        try { sub._resolveOnceSnapshot(null); } catch (e) {}
+        return Promise.resolve();
+      }
+      // active subscription
+      if (sub.id != null) {
+        const id = sub.id;
+        this.subscriptions.delete(id);
+        this._subDescriptors.delete(sub);
+        const req_id = this.nextId++;
+        const msg = { type: 'unsub', req_id, params: { sub_id: id } };
+        return this._sendWithResponse(req_id, msg);
+      }
+      return Promise.resolve();
+  }
+}
+
+/**
+ * @typedef {(method: string, params: any) => void} EventHandler
+ */
+
+export class WsClient {
+  /**
+   * @param {string} uri websocket uri (e.g., "/ws")
+   * @param {{ackTimeoutMs?:number, respTimeoutMs?:number, maxInFlight?:number, autoClose?:boolean}} opts
+   */
+  constructor(uri, opts = {}) {
+    this.url = "ws://" + window.location.host + uri;
+    this.ackTimeoutMs = opts.ackTimeoutMs ?? 5000;
+    this.respTimeoutMs = opts.respTimeoutMs ?? 10000;
+    this.maxInFlight = opts.maxInFlight ?? 8;
+    // whether to auto-close socket on unload/navigation (default: true)
+    this._autoClose = opts.autoClose ?? true;
+
+    this.protocols = [`rap.v${PROTOCOL_VER}+json`, 'rap+json', `rap.v${PROTOCOL_VER}+cbor`, 'rap+cbor'];
+
+    this.ws = null;
+    this.nextId = 1;
+    this.pending = new Map(); // id -> {resolve, reject, ackResolve, ackReject, timer, acknowledged}
+    this.inFlight = 0;
+    this.queue = []; // queued sends when at capacity
+    this.onEvent = (/*method, params*/) => {}; // override
+    this.onOpen = () => {};
+    this.onClose = (/*event*/) => {};
+    // convenience callbacks — override as needed
+    this.onCmd = (/*cmd, params, req_id, meta*/) => {};
+    this.onRequest = (/*name, params, req_id, meta*/) => {};
+    this.onSubscribe = (/*name, params, req_id, meta*/) => {};
+    this.onUnsubscribe = (/*subId, req_id, meta*/) => {};
+    this.onDelta = (/*subId, payload, meta*/) => {};
+
+    this.reconnectDelay = 1000;
+    this._closedExplicitly = false;
+    // subscription bookkeeping
+    this._pendingSubs = new Map(); // req_id -> Subscription (waiting for sub_id)
+    this.subscriptions = new Map(); // sub_id -> Subscription (active)
+    this._subDescriptors = new Map(); // Subscription -> {name, params}
+    this._autoResubscribe = opts.autoResubscribe ?? true;
+
+    // Auto-register unload handlers in browser contexts if requested
+    if (this._autoClose && typeof window !== 'undefined' && window.addEventListener) {
+      this._boundBeforeUnload = () => this.close();
+      this._boundPagehide = (e) => { if (!e.persisted) this.close(); };
+      try {
+        window.addEventListener('beforeunload', this._boundBeforeUnload, { passive: true });
+        window.addEventListener('pagehide', this._boundPagehide, { passive: true });
+      } catch (e) {
+        // some environments may reject options; fall back
+        try { window.addEventListener('beforeunload', this._boundBeforeUnload); } catch (e) {}
+        try { window.addEventListener('pagehide', this._boundPagehide); } catch (e) {}
+      }
+    }
+  }
+
+  open() {
+    this._closedExplicitly = false;
+    this._openInternal();
+  }
+
+  _openInternal() {
+    this.ws = new WebSocket(this.url, this.protocols);
+    this.ws.onopen = () => {
+      if (this.ws.protocol) {
+        console.log(`[WS] Connected. Negotiated subprotocol: ${this.ws.protocol}`);
+        message('success', 'WebSocket connected', 2000);
+      } else {
+        console.warn(`[WS] Connected without subprotocol. Server did not select one.`);
+      }
+      this.onOpen();
+      // re-subscribe active descriptors after successful open
+      if (this._autoResubscribe) this._resubscribeAll();
     };
-    ws.onmessage = async (event) => {
+    this.ws.onmessage = (ev) => this._onMessage(ev.data);
+    this.ws.onerror = () => {
+      // swallow; close will attempt reconnect
+    };
+    this.ws.onclose = (ev) => {
+      // Handshake rejection often shows as code 1006 with empty reason
+      const code = ev.code ?? "unknown";
+      const reason = ev.reason || "(no reason provided by browser)";
+      if (!this._closedExplicitly) {
+        console.warn(`[WS] Connection closed/rejected. code=${code}, reason=${reason}`);
+        message('error', `WebSocket connection closed (code ${code})`, 3000);
+        // Attempt reconnect
+        setTimeout(() => this._openInternal(), this.reconnectDelay);
+      }
+      this.onClose(ev);
+      this._clearPendingWithError(new Error("connection closed"));
+    };
+  }
+
+  close() {
+    this._closedExplicitly = true;
+    if (this.ws) this.ws.close();
+    this._clearPendingWithError(new Error("connection closed"));
+    // remove any auto-registered handlers
+    if (typeof window !== 'undefined' && window.removeEventListener) {
+      if (this._boundBeforeUnload) {
+        try { window.removeEventListener('beforeunload', this._boundBeforeUnload); } catch (e) {}
+        this._boundBeforeUnload = null;
+      }
+      if (this._boundPagehide) {
+        try { window.removeEventListener('pagehide', this._boundPagehide); } catch (e) {}
+        this._boundPagehide = null;
+      }
+    }
+  }
+
+  // alias for explicit lifecycle management
+  destroy() { this.close(); }
+
+  _clearPendingWithError(err) {
+    for (const [, p] of this.pending) {
+      clearTimeout(p.timer);
+      // reject both final result and ack (if present)
+      if (p.reject) p.reject(err);
+      if (p.ackReject) p.ackReject(err);
+    }
+    this.pending.clear();
+    this.inFlight = 0;
+    this.queue = [];
+  }
+
+  _onMessage(raw) {
+    let msg;
+    try { msg = JSON.parse(raw); } catch (e) { console.warn("invalid json", e); return; }
+  
+    if (msg.type === "req") {
+      // server -> client request (RPC). Call application handler.
+      try { this.onRequest(msg.name ?? null, msg.params ?? null, msg.req_id ?? null, msg); } catch (e) { console.warn('onRequest handler error', e); }
+      return;
+    } else if (msg.type === "cmd") {
+      // server -> client command (action expected). Call application handler.
+      try { this.onCmd(msg.name ?? null, msg.params ?? null, msg.req_id ?? null, msg); } catch (e) { console.warn('onCmd handler error', e); }
+      return;
+    } else if (msg.type === "ack" && msg.req_id !== undefined) {
+      const p = this.pending.get(msg.req_id);
+      if (p) {
+        if (p.ackResolve && !p.acknowledged) {
+          p.ackResolve(msg);
+          p.acknowledged = true;
+          this._resetTimer(msg.req_id, this.respTimeoutMs);
+          this.inFlight--; // ack means request is no longer in-flight
+        }
+        this._drain();
+      }
+      return;
+    } else if ((msg.type === "resp" || msg.type === "err") && msg.req_id !== undefined) {
+      const p = this.pending.get(msg.req_id);
+      const payload = msg.payload ?? msg;
+      // If this response contains a subscription id, and we have a pending
+      // subscribe, promote it to an active subscription.
+      if (payload && (payload.sub_id !== undefined || payload.sub_id !== null)) {
+        const subId = payload.sub_id;
+        const sub = this._pendingSubs.get(msg.req_id);
+        if (sub) {
+          this._pendingSubs.delete(msg.req_id);
+          if (!sub._canceled) {
+            sub.id = subId;
+            sub.snapshot = payload.snapshot ?? null;
+            try { sub._resolveOnceSnapshot(sub.snapshot); } catch (e) {}
+            this.subscriptions.set(subId, sub);
+            this._subDescriptors.set(sub, { name: sub._name, params: sub._params });
+          } else {
+            // canceled before assignment: resolve onceSnapshot with null
+            try { sub._resolveOnceSnapshot(null); } catch (e) {}
+          }
+        }
+      }
+
+      if (p) {
+        if (!p.acknowledged) {
+          if (p.ackResolve) p.ackResolve(msg);
+          this.inFlight--; // ack means request is no longer in-flight
+        }
+        clearTimeout(p.timer);
+        this.pending.delete(msg.req_id);
+        if (msg.type === "resp") {
+          if (p.resolve) p.resolve(payload);
+        } else if (msg.type === "err") {
+          if (p.reject) p.reject(new Error(msg.err || "server error"));
+          // if this was a failed subscribe, and we had a pending sub, reject it
+          const sub = this._pendingSubs.get(msg.req_id);
+          if (sub) {
+            this._pendingSubs.delete(msg.req_id);
+            try { sub._rejectOnceSnapshot(new Error(msg.err || 'subscribe error')); } catch (e) {}
+            this._subDescriptors.delete(sub);
+          }
+        }
+        this._drain();
+      }
+      return;
+    } else if (msg.type === "delta") {
+      const payload = msg.payload ?? msg;
+      const subId = msg.sub_id ?? null;
+      // route to matching subscription if present
+      const sub = this.subscriptions.get(subId);
+      if (sub) {
+        try { sub._emitDelta(payload); } catch (e) { console.warn('subscription emit error', e); }
+      } else {
+        console.warn('[WS] delta for unknown sub_id', subId);
+      }
+      try { this.onDelta(subId, payload, msg); } catch (e) { console.warn('onDelta handler error', e); }
+      return;
+    }
+    // sub and unsub TBD
+
+    // fallback
+    this.onEvent(msg.method ?? msg.type, msg.payload ?? msg);
+  }
+
+  // Subscription helpers
+  subscribe(name, params = {}) {
+    const req_id = this.nextId++;
+    const msg = { type: 'sub', req_id, name, params };
+    const sub = new Subscription(name, params, this, req_id);
+    this._pendingSubs.set(req_id, sub);
+    this._subDescriptors.set(sub, { name, params });
+    // send but return subscription handle immediately
+    this._sendWithResponse(req_id, msg).catch((e) => {
+      // errors will be handled in _onMessage, but ensure pending subs cleaned
+      const s = this._pendingSubs.get(req_id);
+      if (s) {
+        this._pendingSubs.delete(req_id);
+        try { s._rejectOnceSnapshot(e); } catch (er) {}
+        this._subDescriptors.delete(s);
+      }
+    });
+    return sub;
+  }
+
+
+  _resubscribeAll() {
+    // Re-issue subscriptions for all descriptors
+    for (const [sub, desc] of Array.from(this._subDescriptors.entries())) {
+      // clear existing id/snapshot
+      sub.id = null;
+      sub.snapshot = null;
+      // send new subscribe
+      const req_id = this.nextId++;
+      sub._reqId = req_id;
+      this._pendingSubs.set(req_id, sub);
+      try {
+        const msg = { type: 'sub', req_id, name: desc.name, params: desc.params };
+        this._sendWithResponse(req_id, msg).catch((e) => {
+          if (this._pendingSubs.has(req_id)) {
+            this._pendingSubs.delete(req_id);
+            try { sub._rejectOnceSnapshot(e); } catch (er) {}
+          }
+        });
+      } catch (e) { /* swallow */ }
+    }
+  }
+
+  // high-level RPC call (cmd/request)
+  cmd(command, params = {}) {
+    const req_id = this.nextId++;
+    const msg = { type: "cmd", req_id, name: command, params: params};
+    return this._sendWithResponse(req_id, msg);
+  }
+
+  // request-type (e.g., get_snapshot)
+  request(name, params = {}) {
+    const req_id = this.nextId++;
+    const msg = { type: "req", req_id, name, params };
+    return this._sendWithResponse(req_id, msg);
+  }
+
+  _sendWithResponse(req_id, msg) {
+    // Provide backward-compatible main Promise that resolves with the
+    // final result, and attach an `.ack` Promise for immediate
+    // acknowledgements. Callers can either `await p` for the final
+    // response or `await p.ack` to know the server accepted the
+    // request.
+    let ackResolve, ackReject;
+    const ackPromise = new Promise((res, rej) => { ackResolve = res; ackReject = rej; });
+
+    const mainPromise = new Promise((resolve, reject) => {
+      const doSend = () => {
         try {
-            // Handle binary messages (Blob or ArrayBuffer)
-            if (event.data instanceof Blob || event.data instanceof ArrayBuffer) {
-                const buffer = event.data instanceof Blob ? await event.data.arrayBuffer() : event.data;
-                const view = new DataView(buffer);
-
-                // Detect message type based on size
-                if (view.byteLength === 1) {
-                    // Event message (1 byte header only)
-                    const eventType = view.getUint8(0);
-                    console.log('Event received:', eventType);
-                    if (window.handleWSEvent) {
-                        window.handleWSEvent(eventType);
-                    }
-                } else if (view.byteLength >= 3) {
-                    // Value message (1 byte header + 2 bytes data)
-                    const type = view.getUint8(0);
-                    const value = view.getInt16(1, true); // little-endian
-                    console.log('Binary message received:', { type, value });
-                    if (window.handleWSBinaryData) {
-                        window.handleWSBinaryData(type, value);
-                    }
-                } else {
-                    console.warn('Invalid binary message size:', view.byteLength);
-                }
-            } else {
-                // Text message
-                console.log('Text message received:', event.data);
-                if (window.handleWSText) {
-                    window.handleWSText(event.data);
-                }
-            }
+          this.ws.send(JSON.stringify(msg));
         } catch (e) {
-            console.error('Error processing incoming message:', e);
+          // reject both promises on immediate send failure
+          reject(e);
+          ackReject(e);
+          return;
         }
-    };
-    ws.onerror = (error) => {
-        console.error('WebSocket error:', error); 
-        message('error', 'WebSocket error: ' + error, 5000); 
-    };
-    ws.onclose = () => {
-        console.log('WebSocket closed'); 
-        message('warn', 'WebSocket closed', 5000);
-        setTimeout(setupWebSocket, 10000);
-    };
-}
+        this.inFlight++;
+        const timer = setTimeout(() => this._onRequestTimeout(req_id), this.ackTimeoutMs);
+        this.pending.set(req_id, { resolve, reject, ackResolve, ackReject, timer, acknowledged: false });
+      };
+      if (this.inFlight < this.maxInFlight) doSend();
+      else this.queue.push(doSend);
+    });
+    mainPromise.ack = ackPromise;
+    return mainPromise;
+  }
 
-export function sendWSBinary(type, value) {
-    const buffer = new ArrayBuffer(3);
-    if (ws.readyState === WebSocket.OPEN) {
-        const view = new DataView(buffer);
-        view.setUint8(0, type);
-        view.setInt16(1, value, true); // true for little-endian
-        ws.send(buffer);
-        console.log('Sent binary message: ', { type, value }, 'buffer: ', buffer);
-
-    } else {
-        console.warn('WebSocket not open, message not sent: ', buffer);
+  _drain() {
+    while (this.inFlight < this.maxInFlight && this.queue.length) {
+      const fn = this.queue.shift();
+      fn();
     }
-}
+  }
 
-export function sendWSEvent(eventType) {
-    const buffer = new ArrayBuffer(1);
-    if (ws.readyState === WebSocket.OPEN) {
-        const view = new DataView(buffer);
-        view.setUint8(0, eventType);
-        ws.send(buffer);
-        console.log('Sent event message: ', eventType, 'buffer: ', buffer);
-    } else {
-        console.warn('WebSocket not open, message not sent: ', buffer);
+  _sendRaw(obj) {
+    try {
+      this.ws?.send(JSON.stringify(obj));
+    } catch (e) {
+      console.warn("send failed", e);
     }
-}
+  }
 
-export function sendWSMessage(msg) {
-    console.log('Sending message ', msg);
-    if (ws.readyState === WebSocket.OPEN) {
-        ws.send(msg);
-    } else {
-        console.warn('WebSocket not open, message not sent:', msg);
+  _onRequestTimeout(req_id) {
+    const p = this.pending.get(req_id);
+    if (p) {
+      this.pending.delete(req_id);
+      this.inFlight--;
+      this._drain();
+      const err = new Error("timeout");
+      if (p.reject) p.reject(err);
+      if (p.ackReject) p.ackReject(err);
     }
+  }
+
+  _resetTimer(req_id, ms) {
+    const p = this.pending.get(req_id);
+    if (p) {
+      clearTimeout(p.timer);
+      p.timer = setTimeout(() => this._onRequestTimeout(req_id), ms);
+    }
+  }
 }
-setupWebSocket();

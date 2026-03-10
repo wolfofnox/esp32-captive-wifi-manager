@@ -1,22 +1,13 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ESP32</title>
-  <link rel="icon" type="image/x-icon" href="/favicon.ico">
-  <link rel="stylesheet" href="/styles.css">
-</head>
-
-<body>
-  <div id="nav"></div> <!-- Navigation will be loaded here by common.js -->
-  <div class="card">
-    <h1>Welcome to ESP32 Example page</h1>
-    <div class="message"></div> <!-- Messages will be displayed here by common.js -->
-    <p>Use the navigation links to access different functionalities.</p>
-    <!-- Add more content as needed -->
-  </div>
-  <footer id="status"></footer> <!-- Status will be updated by common.js -->
-  <script src="common.js"></script> <!-- Common JavaScript for navigation, status, and messages -->
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/x-icon" href="/src/assets/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ESP32 UI using Preact</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>

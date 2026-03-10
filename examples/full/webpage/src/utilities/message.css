@@ -1,0 +1,32 @@
+
+/* Message styles */
+.message {
+  padding: 0 1em;
+  border-radius: 6px;
+  font-weight: bold;
+  display: none; /* hidden by default */
+}
+.message.info {
+  background: #e3f2fd;
+  color: #1565c0;
+  border: 1px solid #90caf9;
+  display: block;
+}
+.message.success {
+  background: #e8f5e9;
+  color: #388e3c;
+  border: 1px solid #a5d6a7;
+  display: block;
+}
+.message.error {
+  background: #ffebee;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+  display: block;
+}
+.message.warning {
+  background: #fff3e0;
+  color: #f57c00;
+  border: 1px solid #ffcc80;
+  display: block;
+}

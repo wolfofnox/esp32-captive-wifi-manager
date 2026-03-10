@@ -1,0 +1,19 @@
+/* Top navigation: centered container, space-between items, but not full-width */
+nav {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: clamp(1rem, 15%, 3rem);
+  padding: 0 1rem;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+/* Prevent nav children from shrinking; allow wrap when needed */
+nav > * {
+  flex: 0 0 auto;
+}

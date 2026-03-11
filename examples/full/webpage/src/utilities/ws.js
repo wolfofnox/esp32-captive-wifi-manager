@@ -81,6 +81,43 @@ class OutgoingSubscription {
   }
 }
 
+class IncomingSubscription {
+  constructor(name, params, client, reqId) {
+    this._client = client;
+    this._name = name;
+    this._params = params;
+    this._reqId = reqId;
+    this.id = client.lastSubId++ ?? null;
+    this._dListeners = new Set();
+    this._snapshotSent = false;
+    this.active = true;
+  }
+
+  sendDelta(payload) {
+    if (this.id == null) return Promise.reject(new Error('No subscription id assigned yet'));
+    const msg = { type: 'delta', sub_id: this.id, payload };
+    try { this._client._sendRaw(msg); } catch (e) { return Promise.reject(e); }
+    return Promise.resolve();
+  }
+
+  sendError(err) {
+    if (this.id == null) return Promise.reject(new Error('No subscription id assigned yet'));
+    return this._client.error(this._reqId, err);
+  }
+
+  sendSnapshot(snapshot) {
+    if (this.id == null) return Promise.reject(new Error('No subscription id assigned yet'));
+    this._snapshotSent = true;
+    return this._client.respond(this._reqId, { sub_id: this.id, snapshot });
+  }
+
+  _sendAck() {
+    if (this.id == null) return Promise.reject(new Error('No subscription id assigned yet'));
+    if (this._snapshotSent) return Promise.resolve();
+    return this._client.ack(this._reqId);
+  }
+}
+
 /**
  * @typedef {(method: string, params: any) => void} EventHandler
  */
@@ -111,9 +148,7 @@ export class WsClient {
     // convenience callbacks — override as needed
     this.onCmd = (/*cmd, params, req_id, meta*/) => {};
     this.onRequest = (/*name, params, req_id, meta*/) => {};
-    this.onSubscribe = (/*name, params, req_id, meta*/) => {};
-    this.onUnsubscribe = (/*subId, req_id, meta*/) => {};
-    this.onDelta = (/*subId, payload, meta*/) => {};
+    this.onSubscribe = (/*name, params, sub*/) => {};
 
     this.reconnectDelay = 1000;
     this._closedExplicitly = false;
@@ -123,6 +158,10 @@ export class WsClient {
     this.outSubscriptions = new Map(); // sub_id -> Subscription (active)
     this._outSubDescriptors = new Map(); // Subscription -> {name, params}
     this._autoResubscribe = opts.autoResubscribe ?? true;
+
+    // incoming subscription bookkeeping
+    this.inSubscriptions = new Map(); // sub_id -> IncomingSubscription
+    this.lastSubId = 0;
 
     // Auto-register unload handlers in browser contexts if requested
     if (this._autoClose && typeof window !== 'undefined' && window.addEventListener) {
@@ -296,8 +335,27 @@ export class WsClient {
         console.warn('[WS] delta for unknown sub_id', subId);
       }
       return;
+    } else if (msg.type === "sub" && msg.name) {
+      const sub = new IncomingSubscription(msg.name ?? null, msg.params ?? null, this, msg.req_id ?? null);
+      this.inSubscriptions.set(sub.id, sub);
+      try { this.onSubscribe(msg.name ?? null, msg.params ?? null, sub); sub._sendAck() }
+      catch (e) {
+        console.warn('onSubscribe handler error', e);
+        sub.sendError('Subscription handler error: ' + e.toString()).catch((err) => console.warn('Failed to send subscription error response', err));
+      }
+      return;
+    } else if (msg.type === "unsub" && msg.params?.sub_id != null) {
+      const sub = this.inSubscriptions.get(msg.params.sub_id);
+      if (sub) {
+        sub.active = false;
+        this.inSubscriptions.delete(msg.params.sub_id);
+        this.respond(msg.req_id, {}).catch((err) => console.warn('Failed to send unsub response', err));
+      } else {
+        console.warn('[WS] unsub for unknown sub_id', msg.params.sub_id);
+        this.error(msg.req_id, 'Subscription not found').catch((err) => console.warn('Failed to send unsub error response', err));
+      }
+      return;
     }
-    // sub and unsub TBD
 
     // fallback
     this.onEvent(msg.method ?? msg.type, msg.payload ?? msg);

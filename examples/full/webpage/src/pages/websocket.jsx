@@ -9,6 +9,8 @@ export default function WebSocket() {
 
     const wsRef = useRef(null);
 
+    const sliderSubRef = useRef(null);
+
     useEffect(() => {
         const wsClient = new WsClient("/ws");
         wsRef.current = wsClient;
@@ -17,7 +19,7 @@ export default function WebSocket() {
             const p = wsClient.request("reload");
             p.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
             p.then((msg) => console.log('WebSocket request completed with message:', msg)).catch((err) => console.error('WebSocket request failed with error:', err));
-            // use the WsClient subscribe method (not firebase/data-connect)
+            
             const sub = wsClient.subscribe("sliderBin");
             sub.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
             sub.onDelta = (delta) => {
@@ -29,6 +31,14 @@ export default function WebSocket() {
                 if (snapshot.value != null) setSliderSubValue(snapshot.value);
             }).catch((err) => console.error('WebSocket snapshot error:', err));
         };
+
+        wsClient.onSubscribe = (name, params, sub) => {
+            console.log('Received subscription request:', name, params);
+            if (name === "sliderSub") {
+                sub.sendSnapshot({ value: sliderSubValue }).catch((err) => console.error('WebSocket sendSnapshot error:', err));
+                sliderSubRef.current = sub;
+            }
+        }
 
         wsClient.open();
 
@@ -48,7 +58,11 @@ export default function WebSocket() {
     useEffect(() => {
         if (!wsRef.current) return;
         // Send slider value as a delta to a subscription
-
+        if (sliderSubRef.current && sliderSubRef.current.active) {
+            sliderSubRef.current.sendDelta({ value: sliderSubValue }).catch((err) => console.error('WebSocket sendDelta error:', err));
+        } else {
+            console.warn('WebSocket subscription not active, cannot send delta');
+        }
     }, [sliderSubValue]);
 
     return (

@@ -20,7 +20,7 @@ import { message } from "./message.jsx";
 const PROTOCOL_VER = 1;
 
 // small Subscription handle
-class Subscription {
+class OutgoingSubscription {
   constructor(name, params, client, reqId) {
     this._client = client;
     this._name = name;
@@ -72,11 +72,12 @@ class Subscription {
       const id = this.id;
       this._client.subscriptions.delete(id);
       this._client._subDescriptors.delete(this);
-      const req_id = this._client.nextId++;
+      const req_id = this._client.lastId++;
       const msg = { type: 'unsub', req_id, params: { sub_id: id } };
       return this._client._sendWithResponse(req_id, msg);
     }
-    return Promise.resolve();
+    // otherwise, not pending or active - return error
+    return Promise.reject(new Error('Subscription not found'));
   }
 }
 
@@ -100,7 +101,7 @@ export class WsClient {
     this.protocols = [`rap.v${PROTOCOL_VER}+json`, 'rap+json'];
 
     this.ws = null;
-    this.nextId = 1;
+    this.lastId = 0;
     this.pending = new Map(); // id -> {resolve, reject, ackResolve, ackReject, timer, acknowledged}
     this.inFlight = 0;
     this.queue = []; // queued sends when at capacity
@@ -116,10 +117,11 @@ export class WsClient {
 
     this.reconnectDelay = 1000;
     this._closedExplicitly = false;
-    // subscription bookkeeping
-    this._pendingSubs = new Map(); // req_id -> Subscription (waiting for sub_id)
-    this.subscriptions = new Map(); // sub_id -> Subscription (active)
-    this._subDescriptors = new Map(); // Subscription -> {name, params}
+
+    // outgoing subscription bookkeeping
+    this._pendingOutSubs = new Map(); // req_id -> Subscription (waiting for sub_id)
+    this.outSubscriptions = new Map(); // sub_id -> Subscription (active)
+    this._outSubDescriptors = new Map(); // Subscription -> {name, params}
     this._autoResubscribe = opts.autoResubscribe ?? true;
 
     // Auto-register unload handlers in browser contexts if requested
@@ -151,9 +153,11 @@ export class WsClient {
       } else {
         console.warn(`[WS] Connected without subprotocol. Server did not select one.`);
       }
-      this.onOpen();
       // re-subscribe active descriptors after successful open
       if (this._autoResubscribe) this._resubscribeAll();
+      this.onOpen();
+      // drain any queued sends that were waiting for the socket to open
+      this._drain();
     };
     this.ws.onmessage = (ev) => this._onMessage(ev.data);
     this.ws.onerror = () => {
@@ -241,15 +245,17 @@ export class WsClient {
       // subscribe, promote it to an active subscription.
       if (payload && payload.sub_id != null) {
         const subId = payload.sub_id;
-        const sub = this._pendingSubs.get(msg.req_id);
+        const sub = this._pendingOutSubs.get(msg.req_id);
         if (sub) {
-          this._pendingSubs.delete(msg.req_id);
-          if (!sub._canceled) {
+          this._pendingOutSubs.delete(msg.req_id);
+          if (msg.type === "err") {
+            try { sub._rejectOnceSnapshot(new Error(msg.err || 'subscribe error')); } catch (e) {}
+          } else if (!sub._canceled) {
             sub.id = subId;
             sub.snapshot = payload.snapshot ?? null;
             try { sub._resolveOnceSnapshot(sub.snapshot); } catch (e) {}
-            this.subscriptions.set(subId, sub);
-            this._subDescriptors.set(sub, { name: sub._name, params: sub._params });
+            this.outSubscriptions.set(subId, sub);
+            this._outSubDescriptors.set(sub, { name: sub._name, params: sub._params });
           } else {
             // canceled before assignment: resolve onceSnapshot with null
             try { sub._resolveOnceSnapshot(null); } catch (e) {}
@@ -269,11 +275,11 @@ export class WsClient {
         } else if (msg.type === "err") {
           if (p.reject) p.reject(new Error(msg.err || "server error"));
           // if this was a failed subscribe, and we had a pending sub, reject it
-          const sub = this._pendingSubs.get(msg.req_id);
+          const sub = this._pendingOutSubs.get(msg.req_id);
           if (sub) {
-            this._pendingSubs.delete(msg.req_id);
+            this._pendingOutSubs.delete(msg.req_id);
             try { sub._rejectOnceSnapshot(new Error(msg.err || 'subscribe error')); } catch (e) {}
-            this._subDescriptors.delete(sub);
+            this._outSubDescriptors.delete(sub);
           }
         }
         this._drain();
@@ -283,13 +289,12 @@ export class WsClient {
       const payload = msg.payload ?? msg;
       const subId = msg.sub_id ?? null;
       // route to matching subscription if present
-      const sub = this.subscriptions.get(subId);
+      const sub = this.outSubscriptions.get(subId);
       if (sub) {
         try { sub._emitDelta(payload); } catch (e) { console.warn('subscription emit error', e); }
       } else {
         console.warn('[WS] delta for unknown sub_id', subId);
       }
-      try { this.onDelta(subId, payload, msg); } catch (e) { console.warn('onDelta handler error', e); }
       return;
     }
     // sub and unsub TBD
@@ -300,19 +305,23 @@ export class WsClient {
 
   // Subscription helpers
   subscribe(name, params = {}) {
-    const req_id = this.nextId++;
-    const msg = { type: 'sub', req_id, name, params };
-    const sub = new Subscription(name, params, this, req_id);
-    this._pendingSubs.set(req_id, sub);
-    this._subDescriptors.set(sub, { name, params });
+    const req_id = this.lastId++;
+    const sub = new OutgoingSubscription(name, params, this, req_id);
+    this._pendingOutSubs.set(req_id, sub);
+    this._outSubDescriptors.set(sub, { name, params });
+    if (this.ws?.readyState !== WebSocket.OPEN) { console.log('[WS] subscribe called while WebSocket not open'); return sub;  } // will be sent on open by _resubscribeAll
     // send but return subscription handle immediately
-    this._sendWithResponse(req_id, msg).catch((e) => {
+    const msg = { type: 'sub', req_id, name, params };
+    const sendPromise = this._sendWithResponse(req_id, msg);
+    // expose the underlying promise and its ack on the subscription for callers
+    try { sub._sendPromise = sendPromise; sub.ack = sendPromise.ack; } catch (e) {}
+    sendPromise.catch((e) => {
       // errors will be handled in _onMessage, but ensure pending subs cleaned
-      const s = this._pendingSubs.get(req_id);
+      const s = this._pendingOutSubs.get(req_id);
       if (s) {
-        this._pendingSubs.delete(req_id);
+        this._pendingOutSubs.delete(req_id);
         try { s._rejectOnceSnapshot(e); } catch (er) {}
-        this._subDescriptors.delete(s);
+        this._outSubDescriptors.delete(s);
       }
     });
     return sub;
@@ -321,23 +330,23 @@ export class WsClient {
 
   _resubscribeAll() {
     // Re-issue subscriptions for all descriptors
-    for (const [sub, desc] of Array.from(this._subDescriptors.entries())) {
+    for (const [sub, desc] of Array.from(this._outSubDescriptors.entries())) {
       if (sub._reqId != null) sub._client._pendingSubs.delete(sub._reqId);
-      if (sub.id != null) this.subscriptions.delete(sub.id);
+      if (sub.id != null) this.outSubscriptions.delete(sub.id);
       if (sub._canceled) continue;
       // clear existing id/snapshot
       sub.id = null;
       sub.snapshot = null; 
       // send new subscribe
-      const req_id = this.nextId++;
+      const req_id = this.lastId++;
       sub._reqId = req_id;
-      this._pendingSubs.set(req_id, sub);
+      this._pendingOutSubs.set(req_id, sub);
       sub.onceSnapshot = new Promise((res, rej) => { sub._resolveOnceSnapshot = res; sub._rejectOnceSnapshot = rej; });
       try {
         const msg = { type: 'sub', req_id, name: desc.name, params: desc.params };
         this._sendWithResponse(req_id, msg).catch((e) => {
-          if (this._pendingSubs.has(req_id)) {
-            this._pendingSubs.delete(req_id);
+          if (this._pendingOutSubs.has(req_id)) {
+            this._pendingOutSubs.delete(req_id);
             try { sub._rejectOnceSnapshot(e); } catch (er) {}
           }
         });
@@ -347,16 +356,34 @@ export class WsClient {
 
   // high-level RPC call (cmd/request)
   cmd(command, params = {}) {
-    const req_id = this.nextId++;
+    const req_id = this.lastId++;
     const msg = { type: "cmd", req_id, name: command, params: params};
     return this._sendWithResponse(req_id, msg);
   }
 
   // request-type (e.g., get_snapshot)
   request(name, params = {}) {
-    const req_id = this.nextId++;
+    const req_id = this.lastId++;
     const msg = { type: "req", req_id, name, params };
     return this._sendWithResponse(req_id, msg);
+  }
+
+  error(req_id, err) {
+    const msg = { type: "err", req_id, err: err.toString() };
+    try { this._sendRaw(msg); } catch (e) { return Promise.reject(e); }
+    return Promise.resolve();
+  }
+
+  respond(req_id, payload) {
+    const msg = { type: "resp", req_id, payload };
+    try { this._sendRaw(msg); } catch (e) { return Promise.reject(e); }
+    return Promise.resolve();
+  }
+
+  ack(req_id) {
+    const msg = { type: "ack", req_id };
+    try { this._sendRaw(msg); } catch (e) { return Promise.reject(e); }
+    return Promise.resolve();
   }
 
   _sendWithResponse(req_id, msg) {
@@ -369,8 +396,8 @@ export class WsClient {
     const ackPromise = new Promise((res, rej) => { ackResolve = res; ackReject = rej; });
 
     const mainPromise = new Promise((resolve, reject) => {
-      const doSend = (reject = false) => {
-        if (reject) {
+      const doSend = (shouldReject = false) => {
+        if (shouldReject) {
           reject(new Error("request rejected from queue"));
           ackReject(new Error("request rejected from queue"));
           return;
@@ -387,14 +414,15 @@ export class WsClient {
         const timer = setTimeout(() => this._onRequestTimeout(req_id), this.ackTimeoutMs);
         this.pending.set(req_id, { resolve, reject, ackResolve, ackReject, timer, acknowledged: false });
       };
-      if (this.inFlight < this.maxInFlight) doSend();
-      else this.queue.push(doSend);
+      this.queue.push(doSend);
+      this._drain();
     });
     mainPromise.ack = ackPromise;
     return mainPromise;
   }
 
   _drain() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     while (this.inFlight < this.maxInFlight && this.queue.length) {
       const fn = this.queue.shift();
       fn();

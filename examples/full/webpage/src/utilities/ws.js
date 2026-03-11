@@ -1,12 +1,12 @@
 // WebSocket client with request/response, events, reconnect hooks.
-// Uses ES module export so you can import { WsClient } from './wsClient.js'
+// Uses ES module export so you can import { WsClient } from './ws.js'
 //
 // For protocol details, see protocol.md. This client abstracts the protocol details
 // and provides a higher-level API for sending requests/commands and handling
 // responses/events.
 
 
-import { message } from "./message";
+import { message } from "./message.jsx";
 
 // Event/message/cmd+req handler - setter, usage, typedef, call in _onMessage
 //    onEvent(msg)
@@ -48,34 +48,35 @@ class Subscription {
   }
 
   unsubscribe() {
+    if (this._canceled) return Promise.resolve();
     // pending subscribe (no assigned id yet)
-      if (sub.id == null && sub._reqId != null && this._pendingSubs.has(sub._reqId)) {
-        this._pendingSubs.delete(sub._reqId);
-        sub._canceled = true;
-        this._subDescriptors.delete(sub);
-        // cancel underlying promise if present
-        const p = this.pending.get(sub._reqId);
-        if (p) {
-          clearTimeout(p.timer);
-          try { if (p.reject) p.reject(new Error('cancelled')); } catch (e) {}
-          try { if (p.ackReject) p.ackReject(new Error('cancelled')); } catch (e) {}
-          this.pending.delete(sub._reqId);
-          this.inFlight--;
-          this._drain();
-        }
-        try { sub._resolveOnceSnapshot(null); } catch (e) {}
-        return Promise.resolve();
+    if (this.id == null && this._reqId != null && this._client._pendingSubs.has(this._reqId)) {
+      this._client._pendingSubs.delete(this._reqId);
+      this._canceled = true;
+      this._client._subDescriptors.delete(this);
+      // cancel underlying promise if present
+      const p = this._client.pending.get(this._reqId);
+      if (p) {
+        clearTimeout(p.timer);
+        try { if (p.reject) p.reject(new Error('cancelled')); } catch (e) {}
+        try { if (p.ackReject) p.ackReject(new Error('cancelled')); } catch (e) {}
+        this._client.pending.delete(this._reqId);
+        this._client.inFlight--;
+        this._client._drain();
       }
-      // active subscription
-      if (sub.id != null) {
-        const id = sub.id;
-        this.subscriptions.delete(id);
-        this._subDescriptors.delete(sub);
-        const req_id = this.nextId++;
-        const msg = { type: 'unsub', req_id, params: { sub_id: id } };
-        return this._sendWithResponse(req_id, msg);
-      }
+      try { this._resolveOnceSnapshot(null); } catch (e) {}
       return Promise.resolve();
+    }
+    // active subscription
+    if (this.id != null) {
+      const id = this.id;
+      this._client.subscriptions.delete(id);
+      this._client._subDescriptors.delete(this);
+      const req_id = this._client.nextId++;
+      const msg = { type: 'unsub', req_id, params: { sub_id: id } };
+      return this._client._sendWithResponse(req_id, msg);
+    }
+    return Promise.resolve();
   }
 }
 
@@ -96,7 +97,7 @@ export class WsClient {
     // whether to auto-close socket on unload/navigation (default: true)
     this._autoClose = opts.autoClose ?? true;
 
-    this.protocols = [`rap.v${PROTOCOL_VER}+json`, 'rap+json', `rap.v${PROTOCOL_VER}+cbor`, 'rap+cbor'];
+    this.protocols = [`rap.v${PROTOCOL_VER}+json`, 'rap+json'];
 
     this.ws = null;
     this.nextId = 1;
@@ -202,6 +203,10 @@ export class WsClient {
     }
     this.pending.clear();
     this.inFlight = 0;
+    for (const item of this.queue) {
+      if (!item) continue;
+      try { item(true); } catch (e) {}
+    }
     this.queue = [];
   }
 
@@ -234,7 +239,7 @@ export class WsClient {
       const payload = msg.payload ?? msg;
       // If this response contains a subscription id, and we have a pending
       // subscribe, promote it to an active subscription.
-      if (payload && (payload.sub_id !== undefined || payload.sub_id !== null)) {
+      if (payload && payload.sub_id != null) {
         const subId = payload.sub_id;
         const sub = this._pendingSubs.get(msg.req_id);
         if (sub) {
@@ -317,13 +322,17 @@ export class WsClient {
   _resubscribeAll() {
     // Re-issue subscriptions for all descriptors
     for (const [sub, desc] of Array.from(this._subDescriptors.entries())) {
+      if (sub._reqId != null) sub._client._pendingSubs.delete(sub._reqId);
+      if (sub.id != null) this.subscriptions.delete(sub.id);
+      if (sub._canceled) continue;
       // clear existing id/snapshot
       sub.id = null;
-      sub.snapshot = null;
+      sub.snapshot = null; 
       // send new subscribe
       const req_id = this.nextId++;
       sub._reqId = req_id;
       this._pendingSubs.set(req_id, sub);
+      sub.onceSnapshot = new Promise((res, rej) => { sub._resolveOnceSnapshot = res; sub._rejectOnceSnapshot = rej; });
       try {
         const msg = { type: 'sub', req_id, name: desc.name, params: desc.params };
         this._sendWithResponse(req_id, msg).catch((e) => {
@@ -360,7 +369,12 @@ export class WsClient {
     const ackPromise = new Promise((res, rej) => { ackResolve = res; ackReject = rej; });
 
     const mainPromise = new Promise((resolve, reject) => {
-      const doSend = () => {
+      const doSend = (reject = false) => {
+        if (reject) {
+          reject(new Error("request rejected from queue"));
+          ackReject(new Error("request rejected from queue"));
+          return;
+        }
         try {
           this.ws.send(JSON.stringify(msg));
         } catch (e) {
@@ -397,13 +411,15 @@ export class WsClient {
 
   _onRequestTimeout(req_id) {
     const p = this.pending.get(req_id);
+    if (p && !p.acknowledged) {
+      p.acknowledged = true; // prevent ack resolution after timeout
+      if (p.ackReject) p.ackReject(new Error("timeout"));
+      this.inFlight--;
+    }
     if (p) {
       this.pending.delete(req_id);
-      this.inFlight--;
+      if (p.reject) p.reject(new Error("timeout"));
       this._drain();
-      const err = new Error("timeout");
-      if (p.reject) p.reject(err);
-      if (p.ackReject) p.ackReject(err);
     }
   }
 

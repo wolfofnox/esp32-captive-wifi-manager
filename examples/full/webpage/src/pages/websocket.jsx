@@ -33,11 +33,15 @@ export default function WebSocket() {
     // initial request is sent from client.onOpen above
 
     useEffect(() => {
+        if (!wsRef.current) return;
         // Send binary slider value
+        try { wsRef.current.cmd("sliderBin", { value: sliderBinValue }).ack.catch((err) => console.error('WebSocket ack error:', err)); } catch (e) { console.error('WebSocket command error:', e); }
     }, [sliderBinValue]);
 
     useEffect(() => {
+        if (!wsRef.current) return;
         // Send JSON slider value
+        try { wsRef.current.cmd("sliderJson", { value: sliderJsonValue }).ack.catch((err) => console.error('WebSocket ack error:', err)); } catch (e) { console.error('WebSocket command error:', e); }
     }, [sliderJsonValue]);
 
     return (
@@ -66,7 +70,7 @@ export default function WebSocket() {
             <div class="text-input-group">
                 <label for="textinput">Text Input:</label>
                 <input type="text" id="textinput" value={textInputValue} onInput={(e) => setTextInputValue(e.target.value)}></input>
-                <button id="sendTextBtn" onClick={async () => await wsRef.current.cmd("text", { value: textInputValue }).ack}>Send</button>
+                <button id="sendTextBtn" onClick={async () => { if (wsRef.current) await wsRef.current.cmd("text", { value: textInputValue }).ack; }}>Send</button>
             </div>
         </div>
     )

@@ -28,23 +28,13 @@ class OutgoingSubscription {
     this._reqId = reqId;
     this.id = null;
     this.snapshot = null;
-    this._dListeners = new Set();
     this._canceled = false;
     let res, rej;
     this.onceSnapshot = new Promise((r, j) => { res = r; rej = j; });
     this._resolveOnceSnapshot = res;
     this._rejectOnceSnapshot = rej;
-  }
-
-  onDelta(cb) {
-    this._dListeners.add(cb);
-    return () => { this._dListeners.delete(cb); };
-  }
-
-  _emitDelta(payload) {
-    try {
-      for (const cb of Array.from(this._dListeners)) cb(payload, this.id);
-    } catch (e) { console.warn('subscription delta handler error', e); }
+    this._waitingForWsOpen = false;
+    this.onDelta = (/*payload*/) => {}
   }
 
   unsubscribe() {
@@ -128,7 +118,8 @@ export class WsClient {
    * @param {{ackTimeoutMs?:number, respTimeoutMs?:number, maxInFlight?:number, autoClose?:boolean}} opts
    */
   constructor(uri, opts = {}) {
-    this.url = "ws://" + window.location.host + uri;
+    const isSecure = window.location.protocol === 'https:';
+    this.url = (isSecure ? "wss://" : "ws://") + window.location.host + uri;
     this.ackTimeoutMs = opts.ackTimeoutMs ?? 5000;
     this.respTimeoutMs = opts.respTimeoutMs ?? 10000;
     this.maxInFlight = opts.maxInFlight ?? 8;
@@ -330,7 +321,7 @@ export class WsClient {
       // route to matching subscription if present
       const sub = this.outSubscriptions.get(subId);
       if (sub) {
-        try { sub._emitDelta(payload); } catch (e) { console.warn('subscription emit error', e); }
+        try { sub.onDelta(payload); } catch (e) { console.warn('subscription emit error', e); }
       } else {
         console.warn('[WS] delta for unknown sub_id', subId);
       }
@@ -367,7 +358,7 @@ export class WsClient {
     const sub = new OutgoingSubscription(name, params, this, req_id);
     this._pendingOutSubs.set(req_id, sub);
     this._outSubDescriptors.set(sub, { name, params });
-    if (this.ws?.readyState !== WebSocket.OPEN) { console.log('[WS] subscribe called while WebSocket not open'); return sub;  } // will be sent on open by _resubscribeAll
+    if (this.ws?.readyState !== WebSocket.OPEN) { this._waitingForWsOpen = true; }
     // send but return subscription handle immediately
     const msg = { type: 'sub', req_id, name, params };
     const sendPromise = this._sendWithResponse(req_id, msg);
@@ -389,9 +380,10 @@ export class WsClient {
   _resubscribeAll() {
     // Re-issue subscriptions for all descriptors
     for (const [sub, desc] of Array.from(this._outSubDescriptors.entries())) {
-      if (sub._reqId != null) sub._client._pendingSubs.delete(sub._reqId);
+      if (sub._reqId != null) sub._client._pendingOutSubs.delete(sub._reqId);
       if (sub.id != null) this.outSubscriptions.delete(sub.id);
       if (sub._canceled) continue;
+      if (sub._waitingForWsOpen) { sub._waitingForWsOpen = false; continue; } // Already in queue
       // clear existing id/snapshot
       sub.id = null;
       sub.snapshot = null; 

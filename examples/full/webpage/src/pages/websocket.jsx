@@ -26,7 +26,7 @@ export default function WebSocket() {
                 console.log('Received sliderBin delta:', delta);
                 if (delta.value != null) setSliderSubValue(delta.value);
             };
-            sub.onceSnapshot().then((snapshot) => {
+            sub.onceSnapshot.then((snapshot) => {
                 console.log('Received sliderBin snapshot:', snapshot);
                 if (snapshot.value != null) setSliderSubValue(snapshot.value);
             }).catch((err) => console.error('WebSocket snapshot error:', err));
@@ -72,19 +72,19 @@ export default function WebSocket() {
             {/* Binary sending example */}
             <div class="slider-group">
                 <div class="slider-label-row">
-                    <label for="sliderCmd">Slider (Binary):</label>
+                    <label for="sliderCmd">Slider (Command):</label>
                     <span class="value" id="sliderCmdValue">{sliderCmdValue}</span>
                 </div>
-                <input type="range" id="sliderCmd" min="0" max="255" value={sliderCmdValue} onInput={(e) => setSliderCmdValue(e.target.value)}></input>
+                <input type="range" id="sliderCmd" min="0" max="255" value={sliderCmdValue} onInput={(e) => setSliderCmdValue(Number(e.target.value))}></input>
             </div>
 
             {/* JSON sending example */}
             <div class="slider-group">
                 <div class="slider-label-row">
-                    <label for="sliderSub">Slider (JSON):</label>
+                    <label for="sliderSub">Slider (Subscription):</label>
                     <span class="value" id="sliderSubValue">{sliderSubValue}</span>
                 </div>
-                <input type="range" id="sliderSub" min="0" max="1023" value={sliderSubValue} onInput={(e) => setSliderSubValue(e.target.value)}></input>
+                <input type="range" id="sliderSub" min="0" max="1023" value={sliderSubValue} onInput={(e) => setSliderSubValue(Number(e.target.value))}></input>
             </div>
 
             {/* Text input example */}

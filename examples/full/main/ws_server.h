@@ -28,12 +28,17 @@ struct ws_client_ctx {
 };
 
 
+/* Register callbacks for WebSocket events. Any callback may be NULL. */
 esp_err_t ws_register_callbacks(on_open_cb open_cb, on_cmd_cb cmd_cb, on_req_cb req_cb, on_close_cb close_cb);
+
+/* Start the receive processing task. Call once after ws_register_callbacks(). */
+esp_err_t ws_start_task(void);
 
 esp_err_t ws_handler(httpd_req_t *req);
 
+esp_err_t ws_send_json(ws_client_handle_t handle, cJSON *json);
+esp_err_t ws_ack(ws_client_handle_t handle, uint32_t req_id);
 esp_err_t ws_respond(ws_client_handle_t handle, uint32_t req_id, cJSON *payload);
 esp_err_t ws_send_error(ws_client_handle_t handle, uint32_t req_id, const char *error_msg);
-// other send a register handler funcs
 
 #endif // WS_SERVER_H

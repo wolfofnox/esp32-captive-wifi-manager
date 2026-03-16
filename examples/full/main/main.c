@@ -121,6 +121,7 @@ void app_main(void)
     wifi_register_http_handler(&ws_uri);
 
     ws_register_callbacks(NULL, NULL, on_req_handler, NULL);
+    ESP_ERROR_CHECK(ws_start_task());
     
     bootTime = esp_timer_get_time();
 }

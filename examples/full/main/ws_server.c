@@ -6,7 +6,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <inttypes.h>
 #include "esp_http_server.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/queue.h"
 
 const char *WS_TAG = "ws_server";
@@ -213,7 +216,6 @@ static ws_client_ctx_t *ws_pool_get_by_sockfd(int sockfd)
 
 esp_err_t ws_register_callbacks(on_open_cb open_cb, on_cmd_cb cmd_cb, on_req_cb req_cb, on_close_cb close_cb)
 {
-    if (!open_cb || !cmd_cb || !req_cb || !close_cb) return ESP_ERR_INVALID_ARG;
     if(!s_lock) ws_pool_init();
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -371,10 +373,119 @@ esp_err_t ws_handler(httpd_req_t *req) {
 
     if (xQueueSend(ws_rx_q, &job, pdMS_TO_TICKS(10)) != pdTRUE) {
         ESP_LOGW(WS_TAG, "RX queue full, dropping message from handle 0x%08X", job.handle);
+        free(ws_pkt.payload);
     } else {
         ESP_LOGV(WS_TAG, "Enqueued message from handle 0x%08X to RX queue", job.handle);
+        /* ownership of payload transferred to the RX task; do NOT free here */
     }
     
-    free(ws_pkt.payload);
+    return ESP_OK;
+}
+
+/* Parse and dispatch a single received RAP message. Frees root on return. */
+static void ws_dispatch_message(ws_client_handle_t handle, cJSON *root)
+{
+    cJSON *type_j   = cJSON_GetObjectItemCaseSensitive(root, "type");
+    cJSON *req_id_j = cJSON_GetObjectItemCaseSensitive(root, "req_id");
+    cJSON *name_j   = cJSON_GetObjectItemCaseSensitive(root, "name");
+    cJSON *params_j = cJSON_GetObjectItemCaseSensitive(root, "params");
+
+    if (!cJSON_IsString(type_j) || !type_j->valuestring) {
+        ESP_LOGW(WS_TAG, "Message from handle 0x%08X missing or invalid 'type'", handle);
+        return;
+    }
+
+    if (!cJSON_IsNumber(req_id_j)) {
+        ESP_LOGW(WS_TAG, "Message from handle 0x%08X missing or invalid 'req_id'", handle);
+        return;
+    }
+
+    double req_id_d = req_id_j->valuedouble;
+    if (req_id_d < 0 || req_id_d > (double)UINT32_MAX || req_id_d != (double)(uint32_t)req_id_d) {
+        ESP_LOGW(WS_TAG, "Message from handle 0x%08X has out-of-range or non-integer 'req_id': %g", handle, req_id_d);
+        return;
+    }
+
+    const char *type   = type_j->valuestring;
+    uint32_t    req_id = (uint32_t)req_id_d;
+
+    /* params is optional; pass NULL to callbacks if absent */
+    if (!cJSON_IsObject(params_j)) {
+        params_j = NULL;
+    }
+
+    if (strcmp(type, "cmd") == 0) {
+        if (!cJSON_IsString(name_j) || !name_j->valuestring) {
+            ESP_LOGW(WS_TAG, "cmd from handle 0x%08X missing 'name'", handle);
+            ws_send_error(handle, req_id, "missing 'name' field");
+            return;
+        }
+        ESP_LOGD(WS_TAG, "cmd '%s' from handle 0x%08X (req_id=%"PRIu32")", name_j->valuestring, handle, req_id);
+        if (g_on_cmd_cb) {
+            esp_err_t r = g_on_cmd_cb(handle, name_j->valuestring, params_j, req_id);
+            if (r != ESP_OK) {
+                ESP_LOGW(WS_TAG, "on_cmd_cb returned %s for cmd '%s'", esp_err_to_name(r), name_j->valuestring);
+            }
+        }
+    } else if (strcmp(type, "req") == 0) {
+        if (!cJSON_IsString(name_j) || !name_j->valuestring) {
+            ESP_LOGW(WS_TAG, "req from handle 0x%08X missing 'name'", handle);
+            ws_send_error(handle, req_id, "missing 'name' field");
+            return;
+        }
+        ESP_LOGD(WS_TAG, "req '%s' from handle 0x%08X (req_id=%"PRIu32")", name_j->valuestring, handle, req_id);
+        if (g_on_req_cb) {
+            esp_err_t r = g_on_req_cb(handle, name_j->valuestring, params_j, req_id);
+            if (r != ESP_OK) {
+                ESP_LOGW(WS_TAG, "on_req_cb returned %s for req '%s'", esp_err_to_name(r), name_j->valuestring);
+            }
+        }
+    } else {
+        ESP_LOGW(WS_TAG, "Unhandled message type '%s' from handle 0x%08X (req_id=%"PRIu32")", type, handle, req_id);
+    }
+}
+
+static void ws_rx_task(void *arg)
+{
+    rx_job_t job;
+    for (;;) {
+        xQueueReceive(ws_rx_q, &job, portMAX_DELAY);
+
+        ESP_LOGV(WS_TAG, "RX task processing message from handle 0x%08X (%u bytes)", job.handle, job.payload_len);
+
+        cJSON *root = cJSON_Parse(job.payload);
+        free(job.payload);
+        job.payload = NULL;
+
+        if (!root) {
+            ESP_LOGW(WS_TAG, "Failed to parse JSON from handle 0x%08X", job.handle);
+            continue;
+        }
+
+        ws_dispatch_message(job.handle, root);
+        cJSON_Delete(root);
+    }
+}
+
+esp_err_t ws_start_task(void)
+{
+    if (!s_lock) ws_pool_init();
+
+    BaseType_t ret = xTaskCreate(
+        ws_rx_task,
+        "ws_rx",
+        CONFIG_WS_RX_TASK_STACK_SIZE,
+        NULL,
+        CONFIG_WS_RX_TASK_PRIORITY,
+        NULL
+    );
+
+    if (ret != pdPASS) {
+        ESP_LOGE(WS_TAG, "Failed to create ws_rx task");
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(WS_TAG, "WS receive task started (stack=%d, prio=%d)",
+             CONFIG_WS_RX_TASK_STACK_SIZE, CONFIG_WS_RX_TASK_PRIORITY);
     return ESP_OK;
 }

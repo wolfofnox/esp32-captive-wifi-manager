@@ -1,0 +1,57 @@
+menu "'full' WiFi example"
+
+choice
+    prompt "example log level"
+    default LOG_LEVEL_EX_INFO
+    help
+        Select the log level for the example.
+
+    config LOG_LEVEL_EX_NONE
+        bool "None"
+    config LOG_LEVEL_EX_ERROR
+        bool "Error"
+    config LOG_LEVEL_EX_WARN
+        bool "Warn"
+    config LOG_LEVEL_EX_INFO
+        bool "Info"
+    config LOG_LEVEL_EX_DEBUG
+        bool "Debug"
+    config LOG_LEVEL_EX_VERBOSE
+        bool "Verbose"
+endchoice
+
+config LOG_LEVEL_EX
+    int
+    default 0 if LOG_LEVEL_EX_NONE
+    default 1 if LOG_LEVEL_EX_ERROR
+    default 2 if LOG_LEVEL_EX_WARN
+    default 3 if LOG_LEVEL_EX_INFO
+    default 4 if LOG_LEVEL_EX_DEBUG
+    default 5 if LOG_LEVEL_EX_VERBOSE
+    help
+        Internal value for example log level (used in code).
+
+config MAX_WS_CLIENTS
+    int "Maximum number of WebSocket clients"
+    default 8
+    help
+        Maximum number of WebSocket clients that can be connected simultaneously.
+
+config MAX_IN_FLIGHT_MSGS
+    int "Maximum number of in-flight messages per client"
+    default 6
+    help
+        Maximum number of pending requests that can be sent to a client without receiving responses.
+
+config WS_RX_QUEUE_SIZE
+    int "Max WebSocket receive queue length"
+    default 10
+    help
+        Size of the queue for incoming WebSocket messages. Number of unhandled messages that can be queued before new messages are dropped.
+
+config WS_TX_QUEUE_SIZE
+    int "Max WebSocket transmit queue length"
+    default 20
+    help
+        Size of the queue for outgoing WebSocket messages. Number of unsent messages that can be queued for sending before new messages are dropped. Messages will wait here if MAX_IN_FLIGHT_MSGS limit is reached for a client.   
+endmenu

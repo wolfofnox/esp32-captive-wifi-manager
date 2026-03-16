@@ -40,8 +40,8 @@ class OutgoingSubscription {
   unsubscribe() {
     if (this._canceled) return Promise.resolve();
     // pending subscribe (no assigned id yet)
-    if (this.id == null && this._reqId != null && this._client._pendingSubs.has(this._reqId)) {
-      this._client._pendingSubs.delete(this._reqId);
+    if (this.id == null && this._reqId != null && this._client._pendingOutSubs.has(this._reqId)) {
+      this._client._pendingOutSubs.delete(this._reqId);
       this._canceled = true;
       this._client._subDescriptors.delete(this);
       // cancel underlying promise if present

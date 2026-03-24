@@ -34,6 +34,8 @@ on_cmd_cb g_on_cmd_cb = NULL;
 on_req_cb g_on_req_cb = NULL;
 on_close_cb g_on_close_cb = NULL;
 on_open_cb g_on_open_cb = NULL;
+on_sub_cb g_on_sub_cb = NULL;
+on_subscribe_delta_cb g_on_subscribe_delta_cb = NULL;
 
 /* helper - build handle from index+1 and generation:
    handle layout: [ generation (16 bits) | index+1 (16 bits) ]
@@ -210,8 +212,7 @@ static ws_client_ctx_t *ws_pool_get_by_sockfd(int sockfd)
     return NULL;
 }
 
-
-esp_err_t ws_register_callbacks(on_open_cb open_cb, on_cmd_cb cmd_cb, on_req_cb req_cb, on_close_cb close_cb)
+esp_err_t ws_register_callbacks(on_open_cb open_cb, on_cmd_cb cmd_cb, on_req_cb req_cb, on_sub_cb sub_cb, on_subscribe_delta_cb subscribe_delta_cb, on_close_cb close_cb)
 {
     if (!open_cb || !cmd_cb || !req_cb || !close_cb) return ESP_ERR_INVALID_ARG;
     if(!s_lock) ws_pool_init();
@@ -220,6 +221,8 @@ esp_err_t ws_register_callbacks(on_open_cb open_cb, on_cmd_cb cmd_cb, on_req_cb 
     g_on_open_cb = open_cb;
     g_on_cmd_cb = cmd_cb;
     g_on_req_cb = req_cb;
+    g_on_sub_cb = sub_cb;
+    g_on_subscribe_delta_cb = subscribe_delta_cb;
     g_on_close_cb = close_cb;
     xSemaphoreGive(s_lock);
     return ESP_OK;
@@ -277,6 +280,29 @@ esp_err_t ws_send_error(ws_client_handle_t handle, uint32_t req_id, const char *
     cJSON_Delete(resp);
     return r;
 }
+
+esp_err_t ws_send_sub_delta(ws_client_handle_t handle, uint16_t sub_id, cJSON *payload) {
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) return ESP_ERR_NO_MEM;
+    cJSON_AddStringToObject(resp, "type", "delta");
+    cJSON_AddNumberToObject(resp, "sub_id", sub_id);
+    cJSON_AddItemToObject(resp, "payload", payload); // takes ownership of payload
+    esp_err_t r = ws_send_json(handle, resp);
+    cJSON_Delete(resp);
+    return r;
+}
+
+esp_err_t ws_subscribe(ws_client_handle_t handle, const char *name, cJSON *params, uint16_t *out_sub_id) {
+    cJSON *msg = cJSON_CreateObject();
+    if (!msg) return ESP_ERR_NO_MEM;
+    cJSON_AddStringToObject(msg, "type", "sub");
+    cJSON_AddStringToObject(msg, "name", name);
+    cJSON_AddItemToObject(msg, "params", params); // takes ownership of params
+    esp_err_t r = ws_send_json(handle, msg);
+    
+
+}
+esp_err_t ws_unsubscribe(ws_client_handle_t handle, uint16_t sub_id){}
 
 esp_err_t ws_handler(httpd_req_t *req) {
     if (req->method == HTTP_GET) {

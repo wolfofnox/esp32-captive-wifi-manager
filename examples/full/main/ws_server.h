@@ -15,6 +15,8 @@ typedef struct ws_client_ctx ws_client_ctx_t;
 typedef esp_err_t (*on_open_cb)(ws_client_handle_t handle, ws_client_ctx_t *ctx);
 typedef esp_err_t (*on_cmd_cb)(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t req_id);
 typedef esp_err_t (*on_req_cb)(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t req_id);
+typedef esp_err_t (*on_sub_cb)(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t req_id, uint16_t sub_id);
+typedef esp_err_t (*on_subscribe_delta_cb)(ws_client_handle_t handle, uint16_t sub_id, cJSON *payload);
 typedef esp_err_t (*on_close_cb)(ws_client_handle_t handle);
 
 struct ws_client_ctx {
@@ -28,12 +30,23 @@ struct ws_client_ctx {
 };
 
 
-esp_err_t ws_register_callbacks(on_open_cb open_cb, on_cmd_cb cmd_cb, on_req_cb req_cb, on_close_cb close_cb);
+/* Register callbacks for WebSocket events. Any callback may be NULL. */
+esp_err_t ws_register_callbacks(on_open_cb open_cb, on_cmd_cb cmd_cb, on_req_cb req_cb, on_sub_cb sub_cb, on_subscribe_delta_cb subscribe_delta_cb, on_close_cb close_cb);
+
+/* Start the receive processing task. Call once after ws_register_callbacks(). */
+esp_err_t ws_start_task(void);
 
 esp_err_t ws_handler(httpd_req_t *req);
 
 esp_err_t ws_respond(ws_client_handle_t handle, uint32_t req_id, cJSON *payload);
 esp_err_t ws_send_error(ws_client_handle_t handle, uint32_t req_id, const char *error_msg);
-// other send a register handler funcs
+
+esp_err_t ws_send_sub_delta(ws_client_handle_t handle, uint16_t sub_id, cJSON *payload);
+
+esp_err_t ws_send_cmd(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t *out_req_id);
+esp_err_t ws_send_req(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t *out_req_id);
+
+esp_err_t ws_subscribe(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t *out_req_id, uint16_t *out_sub_id);
+esp_err_t ws_unsubscribe(ws_client_handle_t handle, uint16_t sub_id);
 
 #endif // WS_SERVER_H

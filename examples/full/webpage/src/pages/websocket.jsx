@@ -11,14 +11,22 @@ export default function WebSocket() {
 
     const sliderSubRef = useRef(null);
 
+    var sliderCmdSkipNextSend = true;
+
     useEffect(() => {
         const wsClient = new WsClient("/ws");
         wsRef.current = wsClient;
 
         wsClient.onOpen = () => {
+            sliderCmdSkipNextSend = true; // prevent sending cmd update back to server on initial load
             const p = wsClient.request("reload");
             p.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
-            p.then((msg) => console.log('WebSocket request completed with message:', msg)).catch((err) => console.error('WebSocket request failed with error:', err));
+            p.then((msg) => {
+                console.log('WebSocket request completed with message:', msg);
+                setSliderCmdValue(msg.sliderCmdValue);
+                setSliderSubValue(msg.sliderSubValue);
+                sliderCmdSkipNextSend = true; // prevent sending cmd update back to server on initial load
+            }).catch((err) => console.error('WebSocket request failed with error:', err));
             
             const sub = wsClient.subscribe("sliderBin");
             sub.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
@@ -52,6 +60,10 @@ export default function WebSocket() {
 
     useEffect(() => {
         if (!wsRef.current) return;
+        if (sliderCmdSkipNextSend) {
+            sliderCmdSkipNextSend = false;
+            return;
+        }
         try { wsRef.current.cmd("sliderCmd", { value: sliderCmdValue }).ack.catch((err) => console.error('WebSocket ack error:', err)); } catch (e) { console.error('WebSocket command error:', e); }
     }, [sliderCmdValue]);
 

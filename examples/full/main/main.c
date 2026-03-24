@@ -15,6 +15,10 @@ uint8_t sliderCmdValue = 0;
 uint8_t sliderPostValue = 0;
 int64_t bootTime;
 
+/* Active subscriptions: handle + sub_id for sending deltas back to the client */
+static ws_client_handle_t g_sliderBin_handle = 0;
+static uint16_t           g_sliderBin_sub_id = 0;
+
 // --- Define functions ---
 esp_err_t status_json_handler(httpd_req_t *req) {
     char json[300];
@@ -76,6 +80,8 @@ esp_err_t on_req_handler(ws_client_handle_t handle, const char *name, cJSON *par
         cJSON_AddNumberToObject(resp, "sliderSubValue", sliderSubValue);
         cJSON_AddNumberToObject(resp, "sliderCmdValue", sliderCmdValue);
         ws_respond(handle, req_id, resp);
+    } else {
+        ws_send_error(handle, req_id, "unknown request");
     }
     return ESP_OK;
 };
@@ -89,6 +95,12 @@ esp_err_t on_cmd_handler(ws_client_handle_t handle, const char *name, cJSON *par
             sliderCmdValue = (uint8_t)value_j->valuedouble;
             ESP_LOGI(TAG, "Command slider updated to %d", sliderCmdValue);
             ws_respond(handle, req_id, NULL); // Send empty response to acknowledge command
+            /* Forward the updated value to all clients subscribed to "sliderBin" */
+            if (g_sliderBin_handle && g_sliderBin_sub_id) {
+                cJSON *delta = cJSON_CreateObject();
+                cJSON_AddNumberToObject(delta, "value", sliderCmdValue);
+                ws_send_sub_delta(g_sliderBin_handle, g_sliderBin_sub_id, delta);
+            }
         } else {
             ESP_LOGW(TAG, "sliderCmd missing 'value' field or 'value' is not a number");
             ws_send_error(handle, req_id, "missing or invalid 'value' field");
@@ -96,6 +108,73 @@ esp_err_t on_cmd_handler(ws_client_handle_t handle, const char *name, cJSON *par
     } else {
         ESP_LOGW(TAG, "Unknown command: %s", name);
         ws_send_error(handle, req_id, "unknown command");
+    }
+    return ESP_OK;
+}
+
+/* Called when the client subscribes to a server-side data stream */
+esp_err_t on_sub_handler(ws_client_handle_t handle, const char *name, cJSON *params,
+                          uint32_t req_id, uint16_t sub_id) {
+    ESP_LOGI(TAG, "Received WS sub: %s (sub_id=%d)", name, sub_id);
+    if (strcmp(name, "sliderBin") == 0) {
+        g_sliderBin_handle = handle;
+        g_sliderBin_sub_id = sub_id;
+        /* Respond with the current sliderCmdValue as the initial snapshot */
+        cJSON *snapshot = cJSON_CreateObject();
+        cJSON_AddNumberToObject(snapshot, "value", sliderCmdValue);
+        ws_respond_sub(handle, req_id, sub_id, snapshot);
+    } else {
+        ws_send_error(handle, req_id, "unknown subscription");
+    }
+    return ESP_OK;
+}
+
+/* Called when the client unsubscribes from a server-side data stream */
+esp_err_t on_unsub_handler(ws_client_handle_t handle, uint16_t sub_id) {
+    ESP_LOGI(TAG, "Client unsubscribed sub_id=%d", sub_id);
+    if (sub_id == g_sliderBin_sub_id) {
+        g_sliderBin_handle = 0;
+        g_sliderBin_sub_id = 0;
+    }
+    return ESP_OK;
+}
+
+/* Called when client accepts the server-initiated "sliderSub" subscription */
+static void on_sliderSub_snapshot(ws_client_handle_t handle, uint16_t sub_id, bool success,
+                                   cJSON *snapshot, void *user_data)
+{
+    if (!success) {
+        ESP_LOGW(TAG, "sliderSub subscription rejected by client (handle=0x%08X)", handle);
+        return;
+    }
+    ESP_LOGI(TAG, "sliderSub accepted by client: handle=0x%08X, sub_id=%d", handle, sub_id);
+    if (snapshot) {
+        cJSON *val = cJSON_GetObjectItemCaseSensitive(snapshot, "value");
+        if (cJSON_IsNumber(val)) {
+            sliderSubValue = (uint8_t)val->valuedouble;
+            ESP_LOGI(TAG, "sliderSub snapshot value: %d", sliderSubValue);
+        }
+    }
+}
+
+/* Called when the client sends a delta for the server-initiated "sliderSub" subscription */
+static void on_sliderSub_delta(ws_client_handle_t handle, uint16_t sub_id,
+                                cJSON *payload, void *user_data)
+{
+    cJSON *val = cJSON_GetObjectItemCaseSensitive(payload, "value");
+    if (cJSON_IsNumber(val)) {
+        sliderSubValue = (uint8_t)val->valuedouble;
+        ESP_LOGD(TAG, "sliderSub delta: value=%d", sliderSubValue);
+    }
+}
+
+esp_err_t on_open_handler(ws_client_handle_t handle, ws_client_ctx_t *ctx) {
+    ESP_LOGI(TAG, "WebSocket client connected: handle=0x%08X", handle);
+    /* Subscribe to the client's sliderSub data stream */
+    esp_err_t r = ws_subscribe(handle, "sliderSub", NULL,
+                                on_sliderSub_snapshot, on_sliderSub_delta, NULL);
+    if (r != ESP_OK) {
+        ESP_LOGW(TAG, "ws_subscribe(sliderSub) failed: %s", esp_err_to_name(r));
     }
     return ESP_OK;
 }
@@ -147,7 +226,8 @@ void app_main(void)
     };
     wifi_register_http_handler(&ws_uri);
 
-    ws_register_callbacks(NULL, on_cmd_handler, on_req_handler, NULL, NULL, NULL);
+    ws_register_callbacks(on_open_handler, on_cmd_handler, on_req_handler,
+                          on_sub_handler, on_unsub_handler, NULL);
     ESP_ERROR_CHECK(ws_start_task());
     
     bootTime = esp_timer_get_time();

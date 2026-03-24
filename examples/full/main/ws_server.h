@@ -23,8 +23,12 @@ struct ws_client_ctx {
     int fd;
     httpd_handle_t hd;
     /* bookkeeping: pending requests, subscriptions, mutex, etc. */
+    // server -> client
     uint32_t               last_req_id; // if server issues requests to client
     SemaphoreHandle_t      in_flight_semaphore; // counts in-flight requests initiated by server
+    // client -> server
+    uint32_t last_recv_req_id; // for detecting if server responded before handler sent ack to not send duplicate responses
+    bool last_recv_req_acked;
 };
 
 
@@ -36,8 +40,7 @@ esp_err_t ws_start_task(void);
 
 esp_err_t ws_handler(httpd_req_t *req);
 
-esp_err_t ws_send_json(ws_client_handle_t handle, cJSON *json);
-esp_err_t ws_ack(ws_client_handle_t handle, uint32_t req_id);
+// responds and deletes the payload object. payload can be NULL if no payload to send, but still want to send a response
 esp_err_t ws_respond(ws_client_handle_t handle, uint32_t req_id, cJSON *payload);
 esp_err_t ws_send_error(ws_client_handle_t handle, uint32_t req_id, const char *error_msg);
 

@@ -5,38 +5,43 @@ import { useState, useEffect, useRef } from 'preact/hooks';
 export default function WebSocket() {
     const [sliderCmdValue, setSliderCmdValue] = useState(0);
     const [sliderSubValue, setSliderSubValue] = useState(0);
+    const [loopbackSubValue, setLoopbackSubValue] = useState(0);
     const [textInputValue, setTextInputValue] = useState('');
+    const [waitingForReloadResponse, setWaitingForReloadResponse] = useState(true); // flag to prevent cmd updates being sent back to server on initial load before reload response is received
 
     const wsRef = useRef(null);
 
     const sliderSubRef = useRef(null);
-
-    var sliderCmdSkipNextSend = true;
 
     useEffect(() => {
         const wsClient = new WsClient("/ws");
         wsRef.current = wsClient;
 
         wsClient.onOpen = () => {
-            sliderCmdSkipNextSend = true; // prevent sending cmd update back to server on initial load
+            setWaitingForReloadResponse(true); // prevent sending cmd update back to server on initial load
             const p = wsClient.request("reload");
             p.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
             p.then((msg) => {
                 console.log('WebSocket request completed with message:', msg);
                 setSliderCmdValue(msg.sliderCmdValue);
                 setSliderSubValue(msg.sliderSubValue);
-                sliderCmdSkipNextSend = true; // prevent sending cmd update back to server on initial load
+                setWaitingForReloadResponse(false); // allow sending cmd updates to server after initial load
+                console.log(`WebSocket reload response processed, waitingForReloadResponse set to ${waitingForReloadResponse}`);
             }).catch((err) => console.error('WebSocket request failed with error:', err));
             
-            const sub = wsClient.subscribe("sliderBin");
+            const sub = wsClient.subscribe("loopback");
             sub.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
             sub.onDelta = (delta) => {
-                console.log('Received sliderBin delta:', delta);
-                if (delta.value != null) setSliderSubValue(delta.value);
+                console.log('Received loopback delta:', delta);
+                if (delta.value !== undefined) {
+                    setLoopbackSubValue(delta.value);
+                }
             };
             sub.onceSnapshot.then((snapshot) => {
-                console.log('Received sliderBin snapshot:', snapshot);
-                if (snapshot.value != null) setSliderSubValue(snapshot.value);
+                console.log('Received loopback snapshot:', snapshot);
+                if (snapshot.value !== undefined) {
+                    setLoopbackSubValue(snapshot.value);
+                }
             }).catch((err) => console.error('WebSocket snapshot error:', err));
         };
 
@@ -60,8 +65,8 @@ export default function WebSocket() {
 
     useEffect(() => {
         if (!wsRef.current) return;
-        if (sliderCmdSkipNextSend) {
-            sliderCmdSkipNextSend = false;
+        if (waitingForReloadResponse) {
+            console.log('Skipping sliderCmd send to avoid loop');
             return;
         }
         try { wsRef.current.cmd("sliderCmd", { value: sliderCmdValue }).ack.catch((err) => console.error('WebSocket ack error:', err)); } catch (e) { console.error('WebSocket command error:', e); }
@@ -69,6 +74,10 @@ export default function WebSocket() {
 
     useEffect(() => {
         if (!wsRef.current) return;
+        if (waitingForReloadResponse) {
+            console.log('Skipping sliderSub send to avoid loop');
+            return;
+        }
         // Send slider value as a delta to a subscription
         if (sliderSubRef.current && sliderSubRef.current.active) {
             sliderSubRef.current.sendDelta({ value: sliderSubValue }).catch((err) => console.error('WebSocket sendDelta error:', err));
@@ -89,6 +98,7 @@ export default function WebSocket() {
                 </div>
                 <input type="range" id="sliderCmd" min="0" max="255" value={sliderCmdValue} onInput={(e) => setSliderCmdValue(Number(e.target.value))}></input>
             </div>
+            Command slider value loopback: {loopbackSubValue}
 
             {/* JSON sending example */}
             <div class="slider-group">
@@ -96,7 +106,7 @@ export default function WebSocket() {
                     <label for="sliderSub">Slider (Subscription):</label>
                     <span class="value" id="sliderSubValue">{sliderSubValue}</span>
                 </div>
-                <input type="range" id="sliderSub" min="0" max="1023" value={sliderSubValue} onInput={(e) => setSliderSubValue(Number(e.target.value))}></input>
+                <input type="range" id="sliderSub" min="0" max="255" value={sliderSubValue} onInput={(e) => setSliderSubValue(Number(e.target.value))}></input>
             </div>
 
             {/* Text input example */}

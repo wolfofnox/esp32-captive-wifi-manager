@@ -16,8 +16,8 @@ uint8_t sliderPostValue = 0;
 int64_t bootTime;
 
 /* Active subscriptions: handle + sub_id for sending deltas back to the client */
-static ws_client_handle_t g_sliderBin_handle = 0;
-static uint16_t           g_sliderBin_sub_id = 0;
+static ws_client_handle_t g_loopback_handle = 0;
+static uint16_t           g_loopback_sub_id = 0;
 
 // --- Define functions ---
 esp_err_t status_json_handler(httpd_req_t *req) {
@@ -95,11 +95,11 @@ esp_err_t on_cmd_handler(ws_client_handle_t handle, const char *name, cJSON *par
             sliderCmdValue = (uint8_t)value_j->valuedouble;
             ESP_LOGI(TAG, "Command slider updated to %d", sliderCmdValue);
             ws_respond(handle, req_id, NULL); // Send empty response to acknowledge command
-            /* Forward the updated value to all clients subscribed to "sliderBin" */
-            if (g_sliderBin_handle && g_sliderBin_sub_id) {
+            /* Forward the updated value to all clients subscribed to "loopback" */
+            if (g_loopback_handle && g_loopback_sub_id) {
                 cJSON *delta = cJSON_CreateObject();
                 cJSON_AddNumberToObject(delta, "value", sliderCmdValue);
-                ws_send_sub_delta(g_sliderBin_handle, g_sliderBin_sub_id, delta);
+                ws_send_sub_delta(g_loopback_handle, g_loopback_sub_id, delta);
             }
         } else {
             ESP_LOGW(TAG, "sliderCmd missing 'value' field or 'value' is not a number");
@@ -116,9 +116,9 @@ esp_err_t on_cmd_handler(ws_client_handle_t handle, const char *name, cJSON *par
 esp_err_t on_sub_handler(ws_client_handle_t handle, const char *name, cJSON *params,
                           uint32_t req_id, uint16_t sub_id) {
     ESP_LOGI(TAG, "Received WS sub: %s (sub_id=%d)", name, sub_id);
-    if (strcmp(name, "sliderBin") == 0) {
-        g_sliderBin_handle = handle;
-        g_sliderBin_sub_id = sub_id;
+    if (strcmp(name, "loopback") == 0) {
+        g_loopback_handle = handle;
+        g_loopback_sub_id = sub_id;
         /* Respond with the current sliderCmdValue as the initial snapshot */
         cJSON *snapshot = cJSON_CreateObject();
         cJSON_AddNumberToObject(snapshot, "value", sliderCmdValue);
@@ -132,9 +132,9 @@ esp_err_t on_sub_handler(ws_client_handle_t handle, const char *name, cJSON *par
 /* Called when the client unsubscribes from a server-side data stream */
 esp_err_t on_unsub_handler(ws_client_handle_t handle, uint16_t sub_id) {
     ESP_LOGI(TAG, "Client unsubscribed sub_id=%d", sub_id);
-    if (sub_id == g_sliderBin_sub_id) {
-        g_sliderBin_handle = 0;
-        g_sliderBin_sub_id = 0;
+    if (sub_id == g_loopback_sub_id) {
+        g_loopback_handle = 0;
+        g_loopback_sub_id = 0;
     }
     return ESP_OK;
 }
@@ -164,7 +164,7 @@ static void on_sliderSub_delta(ws_client_handle_t handle, uint16_t sub_id,
     cJSON *val = cJSON_GetObjectItemCaseSensitive(payload, "value");
     if (cJSON_IsNumber(val)) {
         sliderSubValue = (uint8_t)val->valuedouble;
-        ESP_LOGD(TAG, "sliderSub delta: value=%d", sliderSubValue);
+        ESP_LOGI(TAG, "sliderSub delta: value=%d", sliderSubValue);
     }
 }
 

@@ -57,6 +57,7 @@ typedef void (*ws_sub_delta_cb_t)(ws_client_handle_t handle, uint16_t sub_id, cJ
 /** Pending server-initiated request (cmd or req) waiting for a client response. */
 typedef struct {
     bool         in_use;
+    bool         acked;   /* true once the client has sent an ack; semaphore already released */
     uint32_t     req_id;
     ws_req_cb_t  cb;
     void        *user_data;
@@ -65,6 +66,7 @@ typedef struct {
 /** Pending server-initiated subscription waiting for client to assign a sub_id. */
 typedef struct {
     bool                  in_use;
+    bool                  acked;   /* true once the client has sent an ack; semaphore already released */
     uint32_t              req_id;
     ws_sub_snapshot_cb_t  snapshot_cb;
     ws_sub_delta_cb_t     delta_cb;

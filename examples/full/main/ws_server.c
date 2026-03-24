@@ -658,13 +658,46 @@ static void ws_dispatch_message(ws_client_handle_t handle, cJSON *root)
         return;
     }
 
-    /* ── ack: client acknowledged a server-initiated request ── */
+    /* ── ack: client received the message; release the in-flight slot so the
+     *        server can send new messages, but keep the bookkeeping entry alive
+     *        until the final resp/err arrives. ── */
     if (strcmp(type, "ack") == 0) {
         cJSON *req_id_j = cJSON_GetObjectItemCaseSensitive(root, "req_id");
-        if (cJSON_IsNumber(req_id_j)) {
-            ESP_LOGD(WS_TAG, "ack from handle 0x%08X for req_id=%.0f", handle, req_id_j->valuedouble);
+        if (!cJSON_IsNumber(req_id_j)) return;
+        double req_id_d = req_id_j->valuedouble;
+        if (req_id_d < 0 || req_id_d > (double)UINT32_MAX || req_id_d != (double)(uint32_t)req_id_d) return;
+        uint32_t req_id = (uint32_t)req_id_d;
+
+        ws_client_ctx_t *slot = ws_slot_get_by_handle(handle);
+        if (!slot) return;
+
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        bool released = false;
+        for (int i = 0; i < CONFIG_MAX_IN_FLIGHT_MSGS; i++) {
+            if (slot->out_reqs[i].in_use && !slot->out_reqs[i].acked && slot->out_reqs[i].req_id == req_id) {
+                slot->out_reqs[i].acked = true;
+                released = true;
+                break;
+            }
         }
-        return; /* ack alone doesn't complete a request; wait for resp/err */
+        if (!released) {
+            for (int i = 0; i < CONFIG_MAX_IN_FLIGHT_MSGS; i++) {
+                if (slot->out_subs[i].in_use && !slot->out_subs[i].acked && slot->out_subs[i].req_id == req_id) {
+                    slot->out_subs[i].acked = true;
+                    released = true;
+                    break;
+                }
+            }
+        }
+        xSemaphoreGive(s_lock);
+
+        if (released) {
+            xSemaphoreGive(slot->in_flight_semaphore);
+            ESP_LOGD(WS_TAG, "ack from handle 0x%08X for req_id=%"PRIu32" — in-flight slot freed", handle, req_id);
+        } else {
+            ESP_LOGW(WS_TAG, "ack from handle 0x%08X for unknown or already-acked req_id=%"PRIu32, handle, req_id);
+        }
+        return;
     }
 
     /* ── resp / err: response to a server-initiated request or subscription ── */
@@ -700,6 +733,7 @@ static void ws_dispatch_message(ws_client_handle_t handle, cJSON *root)
                         ws_sub_snapshot_cb_t scb  = slot->out_subs[i].snapshot_cb;
                         ws_sub_delta_cb_t    dcb  = slot->out_subs[i].delta_cb;
                         void                *ud   = slot->out_subs[i].user_data;
+                        bool                 was_acked = slot->out_subs[i].acked;
                         slot->out_subs[i].in_use = false;
 
                         /* Promote to active incoming sub */
@@ -713,7 +747,7 @@ static void ws_dispatch_message(ws_client_handle_t handle, cJSON *root)
                             }
                         }
                         xSemaphoreGive(s_lock);
-                        xSemaphoreGive(slot->in_flight_semaphore);
+                        if (!was_acked) xSemaphoreGive(slot->in_flight_semaphore);
                         ESP_LOGD(WS_TAG, "server sub accepted by client: req_id=%"PRIu32" -> sub_id=%"PRIu16, req_id, sub_id);
                         if (scb) scb(handle, sub_id, true, snapshot_j, ud);
                         return;
@@ -730,9 +764,10 @@ static void ws_dispatch_message(ws_client_handle_t handle, cJSON *root)
                 if (slot->out_subs[i].in_use && slot->out_subs[i].req_id == req_id) {
                     ws_sub_snapshot_cb_t scb = slot->out_subs[i].snapshot_cb;
                     void                *ud  = slot->out_subs[i].user_data;
+                    bool                 was_acked = slot->out_subs[i].acked;
                     slot->out_subs[i].in_use = false;
                     xSemaphoreGive(s_lock);
-                    xSemaphoreGive(slot->in_flight_semaphore);
+                    if (!was_acked) xSemaphoreGive(slot->in_flight_semaphore);
                     if (scb) scb(handle, 0, false, NULL, ud);
                     return;
                 }
@@ -746,9 +781,10 @@ static void ws_dispatch_message(ws_client_handle_t handle, cJSON *root)
             if (slot->out_reqs[i].in_use && slot->out_reqs[i].req_id == req_id) {
                 ws_req_cb_t cb = slot->out_reqs[i].cb;
                 void       *ud = slot->out_reqs[i].user_data;
+                bool        was_acked = slot->out_reqs[i].acked;
                 slot->out_reqs[i].in_use = false;
                 xSemaphoreGive(s_lock);
-                xSemaphoreGive(slot->in_flight_semaphore);
+                if (!was_acked) xSemaphoreGive(slot->in_flight_semaphore);
                 if (cb) cb(handle, success, success ? payload_j : NULL, ud);
                 return;
             }

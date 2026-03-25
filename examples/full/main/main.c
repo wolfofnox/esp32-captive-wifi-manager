@@ -5,6 +5,8 @@
 #include "esp_timer.h"
 #include "Wifi.h"
 #include "time.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "ws_server.h"
 
@@ -19,17 +21,14 @@ int64_t bootTime;
 static ws_client_handle_t g_loopback_handle = 0;
 static uint16_t           g_loopback_sub_id = 0;
 
-// --- Define functions ---
-esp_err_t status_json_handler(httpd_req_t *req) {
-    char json[300];
-    int free_heap = heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
-    int total_heap = heap_caps_get_total_size(MALLOC_CAP_DEFAULT);
-    snprintf(json, sizeof(json), "{\"uptime\": %lli, \"freeHeap\": %d, \"totalHeap\": %d, \"version\": \"%s\"}",
-             (esp_timer_get_time() - bootTime) / 1000, free_heap, total_heap, "EXAMPLE");
-    ESP_LOGD(TAG, "JSON data requested: %s", json);
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, json, strlen(json));
-}
+static ws_client_handle_t g_status_handle = 0;
+static uint16_t           g_status_sub_id = 0;
+
+int last_free_heap_kb = 0;
+int last_total_heap_kb = 0;
+int64_t last_uptime_s = 0;
+bool last_connected = false;
+bool last_in_ap_mode = false;
 
 esp_err_t control_post_handler(httpd_req_t *req) {
     char buf[100];
@@ -123,6 +122,32 @@ esp_err_t on_sub_handler(ws_client_handle_t handle, const char *name, cJSON *par
         cJSON *snapshot = cJSON_CreateObject();
         cJSON_AddNumberToObject(snapshot, "value", sliderCmdValue);
         ws_respond_sub(handle, req_id, sub_id, snapshot);
+    } else if (strcmp(name, "status") == 0) {
+        g_status_handle = handle;
+        g_status_sub_id = sub_id;
+        /* Respond with a snapshot containing some status info */
+        last_free_heap_kb = heap_caps_get_free_size(MALLOC_CAP_DEFAULT) / 1024;
+        last_total_heap_kb = heap_caps_get_total_size(MALLOC_CAP_DEFAULT) / 1024;
+        last_uptime_s = (esp_timer_get_time() - bootTime) / 1000000;
+        bool connected, in_ap_mode;
+        char *ip_str = NULL;
+        char *ssid = NULL;
+        char *ap_ssid = NULL;
+        wifi_get_status(&connected, &in_ap_mode, &ip_str, &ssid, &ap_ssid);
+        cJSON *snapshot = cJSON_CreateObject();
+        cJSON_AddNumberToObject(snapshot, "uptime", last_uptime_s);
+        cJSON_AddNumberToObject(snapshot, "freeHeap", last_free_heap_kb);
+        cJSON_AddNumberToObject(snapshot, "totalHeap", last_total_heap_kb);
+        cJSON_AddStringToObject(snapshot, "version", "EXAMPLE");
+        cJSON_AddBoolToObject(snapshot, "connected", connected);
+        cJSON_AddStringToObject(snapshot, "ip", ip_str ? ip_str : "");
+        cJSON_AddStringToObject(snapshot, "ssid", ssid ? ssid : "");
+        cJSON_AddBoolToObject(snapshot, "in_ap_mode", in_ap_mode);
+        cJSON_AddStringToObject(snapshot, "ap_ssid", ap_ssid ? ap_ssid : "");
+        ws_respond_sub(handle, req_id, sub_id, snapshot);
+        if (ip_str) free(ip_str);
+        if (ssid) free(ssid);
+        if (ap_ssid) free(ap_ssid);
     } else {
         ws_send_error(handle, req_id, "unknown subscription");
     }
@@ -135,6 +160,9 @@ esp_err_t on_unsub_handler(ws_client_handle_t handle, uint16_t sub_id) {
     if (sub_id == g_loopback_sub_id) {
         g_loopback_handle = 0;
         g_loopback_sub_id = 0;
+    } else if (sub_id == g_status_sub_id) {
+        g_status_handle = 0;
+        g_status_sub_id = 0;
     }
     return ESP_OK;
 }
@@ -179,6 +207,64 @@ esp_err_t on_open_handler(ws_client_handle_t handle, ws_client_ctx_t *ctx) {
     return ESP_OK;
 }
 
+static void status_delta_task(void *arg) {
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (g_status_handle && g_status_sub_id) {
+            cJSON *delta = NULL;
+            int64_t uptime_s = (esp_timer_get_time() - bootTime) / 1000000;
+            if ((last_uptime_s < 120 && uptime_s-last_uptime_s >= 2) || (last_uptime_s >= 120 && uptime_s-last_uptime_s >= 10)) {
+                if (!delta) {
+                    delta = cJSON_CreateObject();
+                }
+                cJSON_AddNumberToObject(delta, "uptime", uptime_s);
+                last_uptime_s = uptime_s;
+            }
+            int free_heap_kb = heap_caps_get_free_size(MALLOC_CAP_DEFAULT) / 1024;
+            if (abs(free_heap_kb - last_free_heap_kb) >= 5)
+            {
+                if (!delta) {
+                    delta = cJSON_CreateObject();
+                }
+                cJSON_AddNumberToObject(delta, "freeHeap", free_heap_kb);
+                last_free_heap_kb = free_heap_kb;
+            }
+            int total_heap_kb = heap_caps_get_total_size(MALLOC_CAP_DEFAULT) / 1024;
+            if (total_heap_kb != last_total_heap_kb)
+            {
+                if (!delta) {
+                    delta = cJSON_CreateObject();
+                }
+                cJSON_AddNumberToObject(delta, "totalHeap", total_heap_kb);
+                last_total_heap_kb = total_heap_kb;
+            }
+            bool connected, in_ap_mode;
+            char *ip_str = NULL;
+            char *ssid = NULL;
+            char *ap_ssid = NULL;
+            wifi_get_status(&connected, &in_ap_mode, &ip_str, &ssid, &ap_ssid);
+            if (connected != last_connected) {
+                if (!delta) {
+                    delta = cJSON_CreateObject();
+                }
+                cJSON_AddBoolToObject(delta, "connected", connected);
+                cJSON_AddStringToObject(delta, "ip", connected ? (ip_str ? ip_str : "") : "");
+                cJSON_AddStringToObject(delta, "ssid", connected ? (ssid ? ssid : "") : "");
+                last_connected = connected;
+            }
+            if (in_ap_mode != last_in_ap_mode) {
+                if (!delta) {
+                    delta = cJSON_CreateObject();
+                }
+                cJSON_AddBoolToObject(delta, "in_ap_mode", in_ap_mode);
+                cJSON_AddStringToObject(delta, "ap_ssid", in_ap_mode ? (ap_ssid ? ap_ssid : "") : "");
+                last_in_ap_mode = in_ap_mode;
+            }
+            if (delta) ws_send_sub_delta(g_status_handle, g_status_sub_id, delta);
+        }
+    }       
+}
+
 void app_main(void)
 {
     // Set log level
@@ -202,13 +288,6 @@ void app_main(void)
    
     wifi_init();
 
-    httpd_uri_t status_json_uri = {
-        .uri = "/status.json",
-        .method = HTTP_GET,
-        .handler = status_json_handler
-    };
-    wifi_register_http_handler(&status_json_uri);
-
     httpd_uri_t control_post_uri = {
         .uri = "/control",
         .method = HTTP_POST,
@@ -229,6 +308,8 @@ void app_main(void)
     ws_register_callbacks(on_open_handler, on_cmd_handler, on_req_handler,
                           on_sub_handler, on_unsub_handler, NULL);
     ESP_ERROR_CHECK(ws_start_task());
+
+    xTaskCreate(status_delta_task, "status_delta_task", 2048, NULL, 5, NULL);
     
     bootTime = esp_timer_get_time();
 }

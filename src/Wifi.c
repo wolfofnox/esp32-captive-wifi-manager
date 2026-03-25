@@ -1942,6 +1942,15 @@ esp_err_t not_found_handler(httpd_req_t *req, httpd_err_code_t error) {
     return ESP_FAIL;
 }
 
+/**
+ * @deprecated
+ * @brief HTTP handler for returning current WiFi connection status as JSON.
+ * 
+ * Provides information on whether connected, current IP address, SSID, and AP mode status.
+ * 
+ * @param req HTTP request handle
+ * @return ESP_OK on success
+ */
 esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     char json[256];
     EventBits_t bits = xEventGroupGetBits(wifi_event_group);
@@ -2159,6 +2168,10 @@ void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id
         led_indicator_stop(led_handle, BLINK_WIFI_AP_STARTING);
         led_indicator_start(led_handle, BLINK_WIFI_AP_STARTED);
         xEventGroupSetBits(wifi_event_group, AP_MODE_BIT);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STOP) {
+        ESP_LOGI(TAG, "Wi-Fi AP stopped.");
+        led_indicator_stop(led_handle, BLINK_WIFI_AP_STARTED);
+        xEventGroupClearBits(wifi_event_group, AP_MODE_BIT);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *)event_data;
         ESP_LOGD(TAG, "station " MACSTR " join, AID=%d",

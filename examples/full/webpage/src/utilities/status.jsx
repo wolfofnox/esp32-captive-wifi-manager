@@ -8,13 +8,14 @@ export default function Status() {
   useEffect(() => {
     console.log('Connecting to WebSocket for status updates...');
     const wsClient = new WsClient("/ws");
+    let sub;
     wsClient.onOpen = () => {
       console.log('WebSocket connection opened');
-      const sub = wsClient.subscribe("status");
+      sub = wsClient.subscribe("status");
       sub.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
       sub.onDelta = (delta) => {
         console.log('Received status delta:', delta);
-        setStatus(prevStatus => ({ ...prevStatus, ...delta }));
+        setStatus(prevStatus => ({ ...(prevStatus || {}), ...delta }));
       };
       sub.onceSnapshot.then((snapshot) => {
         console.log('Received status snapshot:', snapshot);
@@ -25,7 +26,7 @@ export default function Status() {
     wsClient.open();
 
     return () => {
-      sub.unsubscribe().catch((err) => console.error('WebSocket unsubscribe error:', err));
+      if (sub) sub.unsubscribe().catch((err) => console.error('WebSocket unsubscribe error:', err));
       wsClient.close();
       console.log('WebSocket connection closed');
     };

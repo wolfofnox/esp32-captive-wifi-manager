@@ -49,12 +49,6 @@ config WS_RX_QUEUE_SIZE
     help
         Size of the queue for incoming WebSocket messages. Number of unhandled messages that can be queued before new messages are dropped.
 
-config WS_TX_QUEUE_SIZE
-    int "Max WebSocket transmit queue length"
-    default 20
-    help
-        Size of the queue for outgoing WebSocket messages. Number of unsent messages that can be queued for sending before new messages are dropped. Messages will wait here if MAX_IN_FLIGHT_MSGS limit is reached for a client.
-
 config WS_RX_TASK_STACK_SIZE
     int "WebSocket receive task stack size (bytes)"
     default 4096

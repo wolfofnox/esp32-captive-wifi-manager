@@ -43,7 +43,7 @@ class OutgoingSubscription {
     if (this.id == null && this._reqId != null && this._client._pendingOutSubs.has(this._reqId)) {
       this._client._pendingOutSubs.delete(this._reqId);
       this._canceled = true;
-      this._client._subDescriptors.delete(this);
+      this._client._outSubDescriptors.delete(this);
       // cancel underlying promise if present
       const p = this._client.pending.get(this._reqId);
       if (p) {
@@ -60,8 +60,8 @@ class OutgoingSubscription {
     // active subscription
     if (this.id != null) {
       const id = this.id;
-      this._client.subscriptions.delete(id);
-      this._client._subDescriptors.delete(this);
+      this._client.outSubscriptions.delete(id);
+      this._client._outSubDescriptors.delete(this);
       const req_id = this._client.lastId++;
       const msg = { type: 'unsub', req_id, params: { sub_id: id } };
       return this._client._sendWithResponse(req_id, msg);
@@ -76,8 +76,15 @@ class IncomingSubscription {
     this._client = client;
     this._name = name;
     this._params = params;
-    this._reqId = reqId;
-    this.id = client.lastSubId++ ?? null;
+    this._reqId = reqId;// Assign a nonzero subscription id; ensure lastSubId is numeric and skip 0.  
+    if (typeof client.lastSubId !== 'number') {  
+      client.lastSubId = 0;  
+    }  
+    client.lastSubId += 1;  
+    if (client.lastSubId === 0) {  
+      client.lastSubId += 1;  
+    }  
+    this.id = client.lastSubId;
     this._dListeners = new Set();
     this._snapshotSent = false;
     this.active = true;
@@ -358,7 +365,7 @@ export class WsClient {
     const sub = new OutgoingSubscription(name, params, this, req_id);
     this._pendingOutSubs.set(req_id, sub);
     this._outSubDescriptors.set(sub, { name, params });
-    if (this.ws?.readyState !== WebSocket.OPEN) { this._waitingForWsOpen = true; }
+    if (this.ws?.readyState !== WebSocket.OPEN) { sub._waitingForWsOpen = true; }
     // send but return subscription handle immediately
     const msg = { type: 'sub', req_id, name, params };
     const sendPromise = this._sendWithResponse(req_id, msg);
@@ -479,13 +486,7 @@ export class WsClient {
     }
   }
 
-  _sendRaw(obj) {
-    try {
-      this.ws?.send(JSON.stringify(obj));
-    } catch (e) {
-      console.warn("send failed", e);
-    }
-  }
+  _sendRaw(obj) { this.ws?.send(JSON.stringify(obj)); }
 
   _onRequestTimeout(req_id) {
     const p = this.pending.get(req_id);

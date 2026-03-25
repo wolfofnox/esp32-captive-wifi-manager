@@ -10,6 +10,8 @@
 #include "time.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <stdlib.h>  
+#include <string.h> 
 
 #include "ws_server.h"
 
@@ -75,7 +77,11 @@ esp_err_t control_post_handler(httpd_req_t *req) {
 
 esp_err_t on_req_handler(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t req_id) {
     ESP_LOGD(TAG, "Received WS request: %s", name);
-    ESP_LOGV(TAG, "Request params: %s", cJSON_Print(params));
+    if (esp_log_level_get(TAG) >= ESP_LOG_VERBOSE && params) {
+        char *params_str = cJSON_Print(params);
+        ESP_LOGV(TAG, "Request params: %s", params_str);
+        if (params_str) cJSON_free(params_str);
+    } else ESP_LOGV(TAG, "No params for this request");
     // Send a response back to the client
     if (strcmp(name, "reload") == 0) {
         ESP_LOGI(TAG, "Reload request received, responding with: Cmd: %d, Sub: %d", sliderCmdValue, sliderSubValue);
@@ -92,7 +98,11 @@ esp_err_t on_req_handler(ws_client_handle_t handle, const char *name, cJSON *par
 
 esp_err_t on_cmd_handler(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t req_id) {
     ESP_LOGD(TAG, "Received WS command: %s", name);
-    ESP_LOGV(TAG, "Command params: %s", cJSON_Print(params));
+    if (esp_log_level_get(TAG) >= ESP_LOG_VERBOSE) {
+        char *params_str = params ? cJSON_Print(params) : "null";
+        ESP_LOGV(TAG, "Command params: %s", params_str);
+        if (params_str) cJSON_free(params_str);
+    }
     if (strcmp(name, "sliderCmd") == 0) {
         cJSON *value_j = cJSON_GetObjectItemCaseSensitive(params, "value");
         if (cJSON_IsNumber(value_j)) {
@@ -128,7 +138,11 @@ esp_err_t on_sub_handler(ws_client_handle_t handle, const char *name, cJSON *par
         cJSON_AddNumberToObject(snapshot, "value", sliderCmdValue);
         
         ESP_LOGI(TAG, "Client subscribed to loopback with sub_id=%d", sub_id);
-        ESP_LOGV(TAG, "Responding to loopback sub with snapshot: %s", cJSON_Print(snapshot));
+        if (esp_log_level_get(TAG) >= ESP_LOG_VERBOSE && snapshot) {
+            char *snapshot_str = cJSON_Print(snapshot);
+            ESP_LOGV(TAG, "Loopback sub snapshot: %s", snapshot_str);
+            if (snapshot_str) cJSON_free(snapshot_str);
+        }
 
         ws_respond_sub(handle, req_id, sub_id, snapshot);
     } else if (strcmp(name, "status") == 0) {
@@ -155,7 +169,11 @@ esp_err_t on_sub_handler(ws_client_handle_t handle, const char *name, cJSON *par
         cJSON_AddStringToObject(snapshot, "ap_ssid", ap_ssid ? ap_ssid : "");
 
         ESP_LOGI(TAG, "Client subscribed to status with sub_id=%d", sub_id);
-        ESP_LOGV(TAG, "Responding to status sub with snapshot: %s", cJSON_Print(snapshot));
+        if (esp_log_level_get(TAG) >= ESP_LOG_VERBOSE && snapshot) {
+            char *snapshot_str = cJSON_Print(snapshot);
+            ESP_LOGV(TAG, "Status sub snapshot: %s", snapshot_str);
+            if (snapshot_str) cJSON_free(snapshot_str);
+        }
 
         ws_respond_sub(handle, req_id, sub_id, snapshot);
         if (ip_str) free(ip_str);
@@ -224,6 +242,16 @@ esp_err_t on_open_handler(ws_client_handle_t handle, ws_client_ctx_t *ctx) {
 
 esp_err_t on_close_handler(ws_client_handle_t handle) {
     ESP_LOGI(TAG, "WebSocket client disconnected: handle=0x%08X", handle);
+
+     /* Clear any global subscription state associated with this handle */  
+    if (handle == g_loopback_handle) {   
+        g_loopback_handle = 0;  
+        g_loopback_sub_id = 0;  
+    }  
+    if (handle == g_status_handle) {  
+        g_status_handle = 0;  
+        g_status_sub_id = 0;  
+    } 
     return ESP_OK;
 }
 
@@ -237,6 +265,7 @@ static void status_delta_task(void *arg) {
                 if (!delta) {
                     delta = cJSON_CreateObject();
                 }
+                if (!delta) continue;
                 cJSON_AddNumberToObject(delta, "uptime", uptime_s);
                 last_uptime_s = uptime_s;
             }
@@ -246,6 +275,7 @@ static void status_delta_task(void *arg) {
                 if (!delta) {
                     delta = cJSON_CreateObject();
                 }
+                if (!delta) continue;
                 cJSON_AddNumberToObject(delta, "freeHeap", free_heap_kb);
                 last_free_heap_kb = free_heap_kb;
             }
@@ -255,6 +285,7 @@ static void status_delta_task(void *arg) {
                 if (!delta) {
                     delta = cJSON_CreateObject();
                 }
+                if (!delta) continue;
                 cJSON_AddNumberToObject(delta, "totalHeap", total_heap_kb);
                 last_total_heap_kb = total_heap_kb;
             }
@@ -267,6 +298,7 @@ static void status_delta_task(void *arg) {
                 if (!delta) {
                     delta = cJSON_CreateObject();
                 }
+                if (!delta) continue;
                 cJSON_AddBoolToObject(delta, "connected", connected);
                 cJSON_AddStringToObject(delta, "ip", connected ? (ip_str ? ip_str : "") : "");
                 cJSON_AddStringToObject(delta, "ssid", connected ? (ssid ? ssid : "") : "");
@@ -276,11 +308,15 @@ static void status_delta_task(void *arg) {
                 if (!delta) {
                     delta = cJSON_CreateObject();
                 }
+                if (!delta) continue;
                 cJSON_AddBoolToObject(delta, "in_ap_mode", in_ap_mode);
                 cJSON_AddStringToObject(delta, "ap_ssid", in_ap_mode ? (ap_ssid ? ap_ssid : "") : "");
                 last_in_ap_mode = in_ap_mode;
             }
             if (delta) ws_send_sub_delta(g_status_handle, g_status_sub_id, delta);
+            if (ip_str) free(ip_str);
+            if (ssid) free(ssid);
+            if (ap_ssid) free(ap_ssid);
         }
     }       
 }

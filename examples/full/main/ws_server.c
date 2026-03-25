@@ -561,13 +561,15 @@ esp_err_t ws_handler(httpd_req_t *req) {
                     return ESP_OK;
                 }
             }
-        }
+        } else {  
+            // Allocation failed: treat CLOSE frame as having an empty payload  
+            ESP_LOGW(WS_TAG, "Failed to allocate memory for WebSocket CLOSE payload from socket %d, treating as empty", fd);  
+            ws_pkt.len = 0;  
+        }  
 
-        const char buff[ws_pkt.len + 1];
-        memcpy((char*)buff, ws_pkt.payload, ws_pkt.len);
-        ((char*)buff)[ws_pkt.len] = 0; // null terminate for logging
+        ws_pkt.payload[ws_pkt.len] = 0; // null-terminate for logging
 
-        ESP_LOGV(WS_TAG, "Received CLOSE frame from socket %d, payload len=%d\n    payload: %s", fd, ws_pkt.len, buff);
+        ESP_LOGV(WS_TAG, "Received CLOSE frame from socket %d, payload len=%d\n    payload: %s", fd, ws_pkt.len, (char*)ws_pkt.payload);
 
         // echo the client's close payload back (if present) as our CLOSE response
         httpd_ws_frame_t out = {
@@ -584,6 +586,11 @@ esp_err_t ws_handler(httpd_req_t *req) {
         ESP_LOGI(WS_TAG, "WebSocket connection closed: sockfd=%d", fd);
         ws_slot_free_by_sockfd(fd);
         free(ws_pkt.payload);
+        return ESP_OK;
+    }
+
+    if (ws_pkt.type != HTTPD_WS_TYPE_TEXT) {
+        ESP_LOGW(WS_TAG, "Unsupported WebSocket frame type %d (non-TEXT) from socket %d, ignoring", ws_pkt.type, httpd_req_to_sockfd(req));
         return ESP_OK;
     }
     

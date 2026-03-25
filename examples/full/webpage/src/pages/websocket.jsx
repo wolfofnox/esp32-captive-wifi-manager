@@ -1,33 +1,90 @@
-import { sendWSBinary, sendWSMessage, sendWSEvent } from "../utilities/ws.js"
-import { useState, useEffect } from 'preact/hooks';
+import { WsClient } from "../utilities/ws.js"
+import { useState, useEffect, useRef } from 'preact/hooks';
+
 
 export default function WebSocket() {
-    const [sliderBinValue, setSliderBinValue] = useState(0);
-    const [sliderJsonValue, setSliderJsonValue] = useState(0);
+    const [sliderCmdValue, setSliderCmdValue] = useState(0);
+    const [sliderSubValue, setSliderSubValue] = useState(0);
+    const [loopbackSubValue, setLoopbackSubValue] = useState(0);
     const [textInputValue, setTextInputValue] = useState('');
+    const [waitingForReloadResponse, setWaitingForReloadResponse] = useState(true); // flag to prevent cmd updates being sent back to server on initial load before reload response is received
+
+    const wsRef = useRef(null);
+
+    const sliderSubRef = useRef(null);
 
     useEffect(() => {
-        sendWSBinary(1, parseInt(sliderBinValue));
-    }, [sliderBinValue]);
+        const wsClient = new WsClient("/ws");
+        wsRef.current = wsClient;
 
-    useEffect(() => {
-        sendWSMessage(JSON.stringify({ type: 'slider', value: parseInt(sliderJsonValue) }));
-    }, [sliderJsonValue]);
+        wsClient.onOpen = () => {
+            setWaitingForReloadResponse(true); // prevent sending cmd update back to server on initial load
+            const p = wsClient.request("reload");
+            p.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
+            p.then((msg) => {
+                console.log('WebSocket request completed with message:', msg);
+                setSliderCmdValue(msg.sliderCmdValue);
+                setSliderSubValue(msg.sliderSubValue);
+                setWaitingForReloadResponse(false); // allow sending cmd updates to server after initial load
+                console.log(`WebSocket reload response processed, waitingForReloadResponse set to ${waitingForReloadResponse}`);
+            }).catch((err) => console.error('WebSocket request failed with error:', err));
+            
+            const sub = wsClient.subscribe("loopback");
+            sub.ack.then((res) => console.log('WebSocket ack response:', res)).catch((err) => console.error('WebSocket ack error:', err));
+            sub.onDelta = (delta) => {
+                console.log('Received loopback delta:', delta);
+                if (delta.value !== undefined) {
+                    setLoopbackSubValue(delta.value);
+                }
+            };
+            sub.onceSnapshot.then((snapshot) => {
+                console.log('Received loopback snapshot:', snapshot);
+                if (snapshot.value !== undefined) {
+                    setLoopbackSubValue(snapshot.value);
+                }
+            }).catch((err) => console.error('WebSocket snapshot error:', err));
+        };
 
-    window.handleWSBinaryData = (type, value) => {
-        if (type === 1) { // Binary slider update
-            setSliderBinValue(value);
-        } else if (type === 2) { // JSON slider update
-            setSliderJsonValue(value);
-        } else {
-            console.warn('Unknown binary message type:', type);
+        wsClient.onSubscribe = (name, params, sub) => {
+            console.log('Received subscription request:', name, params);
+            if (name === "sliderSub") {
+                sub.sendSnapshot({ value: sliderSubValue }).catch((err) => console.error('WebSocket sendSnapshot error:', err));
+                sliderSubRef.current = sub;
+            }
         }
-    };
 
-    window.onWSOpen = () => {
-        sendWSEvent(2); // RELOAD
-        sendWSMessage("reload"); // For text-based matching in rules of Esp32EmuConsole
-    };
+        wsClient.open();
+
+        return () => {
+            wsClient.close();
+            wsRef.current = null;
+        }
+    }, []);
+
+    // initial request is sent from client.onOpen above
+
+    useEffect(() => {
+        if (!wsRef.current) return;
+        if (waitingForReloadResponse) {
+            console.log('Skipping sliderCmd send to avoid loop');
+            return;
+        }
+        try { wsRef.current.cmd("sliderCmd", { value: sliderCmdValue }).ack.catch((err) => console.error('WebSocket ack error:', err)); } catch (e) { console.error('WebSocket command error:', e); }
+    }, [sliderCmdValue]);
+
+    useEffect(() => {
+        if (!wsRef.current) return;
+        if (waitingForReloadResponse) {
+            console.log('Skipping sliderSub send to avoid loop');
+            return;
+        }
+        // Send slider value as a delta to a subscription
+        if (sliderSubRef.current && sliderSubRef.current.active) {
+            sliderSubRef.current.sendDelta({ value: sliderSubValue }).catch((err) => console.error('WebSocket sendDelta error:', err));
+        } else {
+            console.warn('WebSocket subscription not active, cannot send delta');
+        }
+    }, [sliderSubValue]);
 
     return (
         <div class="card">
@@ -36,26 +93,27 @@ export default function WebSocket() {
             {/* Binary sending example */}
             <div class="slider-group">
                 <div class="slider-label-row">
-                    <label for="sliderBin">Slider (Binary):</label>
-                    <span class="value" id="sliderBinValue">{sliderBinValue}</span>
+                    <label for="sliderCmd">Slider (Command):</label>
+                    <span class="value" id="sliderCmdValue">{sliderCmdValue}</span>
                 </div>
-                <input type="range" id="sliderBin" min="0" max="255" value={sliderBinValue} onInput={(e) => setSliderBinValue(e.target.value)}></input>
+                <input type="range" id="sliderCmd" min="0" max="255" value={sliderCmdValue} onInput={(e) => setSliderCmdValue(Number(e.target.value))}></input>
             </div>
+            Command slider value loopback: {loopbackSubValue}
 
             {/* JSON sending example */}
             <div class="slider-group">
                 <div class="slider-label-row">
-                    <label for="sliderJson">Slider (JSON):</label>
-                    <span class="value" id="sliderJsonValue">{sliderJsonValue}</span>
+                    <label for="sliderSub">Slider (Subscription):</label>
+                    <span class="value" id="sliderSubValue">{sliderSubValue}</span>
                 </div>
-                <input type="range" id="sliderJson" min="0" max="1023" value={sliderJsonValue} onInput={(e) => setSliderJsonValue(e.target.value)}></input>
+                <input type="range" id="sliderSub" min="0" max="255" value={sliderSubValue} onInput={(e) => setSliderSubValue(Number(e.target.value))}></input>
             </div>
 
             {/* Text input example */}
             <div class="text-input-group">
                 <label for="textinput">Text Input:</label>
                 <input type="text" id="textinput" value={textInputValue} onInput={(e) => setTextInputValue(e.target.value)}></input>
-                <button id="sendTextBtn" onClick={() => sendWSMessage(JSON.stringify({ type: 'text', value: textInputValue }))}>Send</button>
+                <button id="sendTextBtn" onClick={async () => { if (wsRef.current) await wsRef.current.cmd("text", { value: textInputValue }).ack; }}>Send</button>
             </div>
         </div>
     )

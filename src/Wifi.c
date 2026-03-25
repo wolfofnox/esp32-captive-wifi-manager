@@ -30,6 +30,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
+#include <stdlib.h>
+#include <string.h>
+
 #include "time.h"
 #include "esp_sntp.h"
 
@@ -88,6 +91,9 @@ static const int mDNS_CHANGE_BIT = BIT5;
 
 /** @brief Event bit to trigger time synchronization */
 static const int SYNC_TIME_BIT = BIT6;
+
+/** @brief Event bit indicating AP mode is active */
+static const int AP_MODE_BIT = BIT7;
 
 /** @brief HTTP server handle, NULL when server is not running */
 httpd_handle_t server = NULL;
@@ -1260,6 +1266,59 @@ void fill_captive_portal_config_struct(captive_portal_config *cfg) {
     cfg->wifi_mode = WIFI_MODE_STA;  // Default to station mode
 }
 
+void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out_ip_str, char **out_ssid, char **out_ap_ssid) {
+    EventBits_t bits = xEventGroupGetBits(wifi_event_group);
+    esp_netif_ip_info_t ip_info = {0};
+    if (sta_netif) {
+        esp_netif_get_ip_info(sta_netif, &ip_info);
+    }
+
+    bool connected = (bits & CONNECTED_BIT) != 0;
+    bool in_ap = (bits & AP_MODE_BIT) != 0;
+
+    if (out_connected_to_ap) {
+        *out_connected_to_ap = connected;
+    }
+    if (out_in_ap_mode) {
+        *out_in_ap_mode = in_ap;
+    }
+
+    if (out_ssid) {
+        if (connected && strlen(captive_cfg.ssid) > 0) {
+            size_t len = strlen(captive_cfg.ssid) + 1;
+            *out_ssid = malloc(len);
+            if (*out_ssid) {
+                memcpy(*out_ssid, captive_cfg.ssid, len);
+            }
+        } else {
+            *out_ssid = NULL;
+        }
+    }
+
+    if (out_ap_ssid) {
+        if (in_ap && strlen(captive_cfg.ap_ssid) > 0) {
+            size_t len = strlen(captive_cfg.ap_ssid) + 1;
+            *out_ap_ssid = malloc(len);
+            if (*out_ap_ssid) {
+                memcpy(*out_ap_ssid, captive_cfg.ap_ssid, len);
+            }
+        } else {
+            *out_ap_ssid = NULL;
+        }
+    }
+
+    if (out_ip_str) {
+        if (connected && ip_info.ip.addr != 0) {
+            *out_ip_str = malloc(IP4ADDR_STRLEN_MAX);
+            if (*out_ip_str) {
+                esp_ip4addr_ntoa(&ip_info.ip, *out_ip_str, IP4ADDR_STRLEN_MAX);
+            }
+        } else {
+            *out_ip_str = NULL;
+        }
+    }
+}
+
 #pragma endregion
 
 #pragma region FreeRTOS Tasks
@@ -1883,6 +1942,15 @@ esp_err_t not_found_handler(httpd_req_t *req, httpd_err_code_t error) {
     return ESP_FAIL;
 }
 
+/**
+ * @deprecated
+ * @brief HTTP handler for returning current WiFi connection status as JSON.
+ * 
+ * Provides information on whether connected, current IP address, SSID, and AP mode status.
+ * 
+ * @param req HTTP request handle
+ * @return ESP_OK on success
+ */
 esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     char json[256];
     EventBits_t bits = xEventGroupGetBits(wifi_event_group);
@@ -1891,9 +1959,12 @@ esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     bool connected = (bits & CONNECTED_BIT) != 0;
     char ip_str[IP4ADDR_STRLEN_MAX];
     esp_ip4addr_ntoa(&ip_info.ip, ip_str, IP4ADDR_STRLEN_MAX);
-    snprintf(json, sizeof(json), "{\"connected\": %s, \"ip\": \"%s\"}",
+    snprintf(json, sizeof(json), "{\"connected\": %s, \"ip\": \"%s\", \"ssid\": \"%s\", \"in_ap_mode\": %s, \"ap_ssid\": \"%s\"}",
              connected ? "true" : "false",
-             ip_str);
+             ip_str,
+             connected ? captive_cfg.ssid : "",
+             (bits & AP_MODE_BIT) ? "true" : "false",
+             (bits & AP_MODE_BIT) ? captive_cfg.ap_ssid : "");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, strlen(json));
     ESP_LOGD(TAG_CAPTIVE, "WiFi status JSON sent: %s", json);
@@ -2096,6 +2167,11 @@ void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id
         ESP_LOGI(TAG, "Wi-Fi AP started."); 
         led_indicator_stop(led_handle, BLINK_WIFI_AP_STARTING);
         led_indicator_start(led_handle, BLINK_WIFI_AP_STARTED);
+        xEventGroupSetBits(wifi_event_group, AP_MODE_BIT);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STOP) {
+        ESP_LOGI(TAG, "Wi-Fi AP stopped.");
+        led_indicator_stop(led_handle, BLINK_WIFI_AP_STARTED);
+        xEventGroupClearBits(wifi_event_group, AP_MODE_BIT);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *)event_data;
         ESP_LOGD(TAG, "station " MACSTR " join, AID=%d",
@@ -2106,6 +2182,7 @@ void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id
                  MAC2STR(event->mac), event->aid, event->reason);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START && mode == WIFI_MODE_STA) {
         ESP_LOGI(TAG, "Wi-Fi STA started, connecting...");
+        xEventGroupClearBits(wifi_event_group, AP_MODE_BIT);
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t *)event_data;

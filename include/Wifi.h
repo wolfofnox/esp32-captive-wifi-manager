@@ -106,4 +106,18 @@ void wifi_set_led_rgb(uint32_t irgb, uint8_t brightness);
  */
 void url_decode(char *str);
 
+/**
+ * @brief Get the current WiFi connection status and configuration.
+ * 
+ * Retrieves the current WiFi connection status, including whether connected
+ * to an AP, whether in AP mode, current IP address, and SSIDs. The caller is responsible for providing valid pointers for output parameters.
+ * 
+ * @param out_connected_to_ap Pointer to bool that will be set to true if connected to an AP, false otherwise
+ * @param out_in_ap_mode Pointer to bool that will be set to true if in AP mode, false otherwise
+ * @param out_ip_str Pointer to char* that will be set to a newly allocated string containing the current IP address (caller must free), or NULL if not connected
+ * @param out_ssid Pointer to char* that will be set to a newly allocated string containing the connected SSID (caller must free), or NULL if not connected
+ * @param out_ap_ssid Pointer to char* that will be set to a newly allocated string containing the AP SSID if in AP mode (caller must free), or NULL if not in AP mode
+ */
+void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out_ip_str, char **out_ssid, char **out_ap_ssid); 
+
 #endif

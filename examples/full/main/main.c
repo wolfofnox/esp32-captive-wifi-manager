@@ -1,5 +1,8 @@
 #include "sdkconfig.h"
+
+#define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_EX
 #include "esp_log.h"
+
 #include "esp_check.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
@@ -38,7 +41,8 @@ esp_err_t control_post_handler(httpd_req_t *req) {
     }
     buf[len] = 0; // Null-terminate the received data
 
-    ESP_LOGI(TAG, "Received control data: %s", buf);
+    ESP_LOGD(TAG, "Received control POST data");
+    ESP_LOGV(TAG, "Control POST data: %s", buf);
 
 
     if (len > 0) {
@@ -48,16 +52,16 @@ esp_err_t control_post_handler(httpd_req_t *req) {
         if (httpd_query_key_value(buf, "slider", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
             sliderPostValue = (uint8_t)atoi(param);
-            ESP_LOGI(TAG, "Post slider updated to %d", sliderPostValue);
+            ESP_LOGI(TAG, "HTTP POST: Post slider updated to %d", sliderPostValue);
         }
         if (httpd_query_key_value(buf, "text", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
-            ESP_LOGI(TAG, "Text value is %s", param);
+            ESP_LOGI(TAG, "HTTP POST: Text value is %s", param);
         }
         if (httpd_query_key_value(buf, "number", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
             int numberValue = (uint8_t)atoi(param);
-            ESP_LOGI(TAG, "Number value is %d", numberValue);
+            ESP_LOGI(TAG, "HTTP POST: Number value is %d", numberValue);
         }
     }
 
@@ -65,29 +69,30 @@ esp_err_t control_post_handler(httpd_req_t *req) {
     httpd_resp_set_status(req, "302 Temporary Redirect");
     httpd_resp_set_hdr(req, "Location", "/control");
     httpd_resp_send(req, "Control data received, redirecting", HTTPD_RESP_USE_STRLEN);
-    ESP_LOGV(TAG, "Redirecting to back control page, method GET");
+    ESP_LOGD(TAG, "Redirecting to back control page, method GET");
     return ESP_OK;
 }
 
 esp_err_t on_req_handler(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t req_id) {
-    ESP_LOGI(TAG, "Received WS request: %s", name);
-    ESP_LOGD(TAG, "Request params: %s", cJSON_Print(params));
+    ESP_LOGD(TAG, "Received WS request: %s", name);
+    ESP_LOGV(TAG, "Request params: %s", cJSON_Print(params));
     // Send a response back to the client
     if (strcmp(name, "reload") == 0) {
-        ESP_LOGD(TAG, "Reload request received, responding with: Cmd: %d, Sub: %d", sliderCmdValue, sliderSubValue);
+        ESP_LOGI(TAG, "Reload request received, responding with: Cmd: %d, Sub: %d", sliderCmdValue, sliderSubValue);
         cJSON *resp = cJSON_CreateObject();
         cJSON_AddNumberToObject(resp, "sliderSubValue", sliderSubValue);
         cJSON_AddNumberToObject(resp, "sliderCmdValue", sliderCmdValue);
         ws_respond(handle, req_id, resp);
     } else {
+        ESP_LOGW(TAG, "Unknown request: %s", name);
         ws_send_error(handle, req_id, "unknown request");
     }
     return ESP_OK;
 };
 
 esp_err_t on_cmd_handler(ws_client_handle_t handle, const char *name, cJSON *params, uint32_t req_id) {
-    ESP_LOGI(TAG, "Received WS command: %s", name);
-    ESP_LOGD(TAG, "Command params: %s", cJSON_Print(params));
+    ESP_LOGD(TAG, "Received WS command: %s", name);
+    ESP_LOGV(TAG, "Command params: %s", cJSON_Print(params));
     if (strcmp(name, "sliderCmd") == 0) {
         cJSON *value_j = cJSON_GetObjectItemCaseSensitive(params, "value");
         if (cJSON_IsNumber(value_j)) {
@@ -114,13 +119,17 @@ esp_err_t on_cmd_handler(ws_client_handle_t handle, const char *name, cJSON *par
 /* Called when the client subscribes to a server-side data stream */
 esp_err_t on_sub_handler(ws_client_handle_t handle, const char *name, cJSON *params,
                           uint32_t req_id, uint16_t sub_id) {
-    ESP_LOGI(TAG, "Received WS sub: %s (sub_id=%d)", name, sub_id);
+    ESP_LOGD(TAG, "Received WS sub: %s (sub_id=%d)", name, sub_id);
     if (strcmp(name, "loopback") == 0) {
         g_loopback_handle = handle;
         g_loopback_sub_id = sub_id;
         /* Respond with the current sliderCmdValue as the initial snapshot */
         cJSON *snapshot = cJSON_CreateObject();
         cJSON_AddNumberToObject(snapshot, "value", sliderCmdValue);
+        
+        ESP_LOGI(TAG, "Client subscribed to loopback with sub_id=%d", sub_id);
+        ESP_LOGV(TAG, "Responding to loopback sub with snapshot: %s", cJSON_Print(snapshot));
+
         ws_respond_sub(handle, req_id, sub_id, snapshot);
     } else if (strcmp(name, "status") == 0) {
         g_status_handle = handle;
@@ -144,6 +153,10 @@ esp_err_t on_sub_handler(ws_client_handle_t handle, const char *name, cJSON *par
         cJSON_AddStringToObject(snapshot, "ssid", ssid ? ssid : "");
         cJSON_AddBoolToObject(snapshot, "in_ap_mode", in_ap_mode);
         cJSON_AddStringToObject(snapshot, "ap_ssid", ap_ssid ? ap_ssid : "");
+
+        ESP_LOGI(TAG, "Client subscribed to status with sub_id=%d", sub_id);
+        ESP_LOGV(TAG, "Responding to status sub with snapshot: %s", cJSON_Print(snapshot));
+
         ws_respond_sub(handle, req_id, sub_id, snapshot);
         if (ip_str) free(ip_str);
         if (ssid) free(ssid);
@@ -156,13 +169,15 @@ esp_err_t on_sub_handler(ws_client_handle_t handle, const char *name, cJSON *par
 
 /* Called when the client unsubscribes from a server-side data stream */
 esp_err_t on_unsub_handler(ws_client_handle_t handle, uint16_t sub_id) {
-    ESP_LOGI(TAG, "Client unsubscribed sub_id=%d", sub_id);
+    ESP_LOGD(TAG, "Client unsubscribed sub_id=%d", sub_id);
     if (sub_id == g_loopback_sub_id) {
         g_loopback_handle = 0;
         g_loopback_sub_id = 0;
+        ESP_LOGI(TAG, "Client unsubscribed from loopback (sub_id=%d)", sub_id);
     } else if (sub_id == g_status_sub_id) {
         g_status_handle = 0;
         g_status_sub_id = 0;
+        ESP_LOGI(TAG, "Client unsubscribed from status (sub_id=%d)", sub_id);
     }
     return ESP_OK;
 }
@@ -204,6 +219,11 @@ esp_err_t on_open_handler(ws_client_handle_t handle, ws_client_ctx_t *ctx) {
     if (r != ESP_OK) {
         ESP_LOGW(TAG, "ws_subscribe(sliderSub) failed: %s", esp_err_to_name(r));
     }
+    return ESP_OK;
+}
+
+esp_err_t on_close_handler(ws_client_handle_t handle) {
+    ESP_LOGI(TAG, "WebSocket client disconnected: handle=0x%08X", handle);
     return ESP_OK;
 }
 
@@ -267,10 +287,6 @@ static void status_delta_task(void *arg) {
 
 void app_main(void)
 {
-    // Set log level
-    esp_log_level_set("*", CONFIG_LOG_DEFAULT_LEVEL);
-    esp_log_level_set(TAG, CONFIG_LOG_LEVEL_EX);
-    esp_log_level_set("ws_server", CONFIG_LOG_LEVEL_EX); 
     ESP_LOGI(TAG, "START %s from %s", __FILE__, __DATE__);
     ESP_LOGI(TAG, "Setting up...");
 
@@ -306,7 +322,7 @@ void app_main(void)
     wifi_register_http_handler(&ws_uri);
 
     ws_register_callbacks(on_open_handler, on_cmd_handler, on_req_handler,
-                          on_sub_handler, on_unsub_handler, NULL);
+                          on_sub_handler, on_unsub_handler, on_close_handler);
     ESP_ERROR_CHECK(ws_start_task());
 
     xTaskCreate(status_delta_task, "status_delta_task", 2048, NULL, 5, NULL);

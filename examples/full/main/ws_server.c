@@ -1,6 +1,8 @@
 #include "ws_server.h"
 
 #include "sdkconfig.h"
+
+#define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_EX
 #include "esp_log.h"
 #include "esp_check.h"
 #include <string.h>
@@ -107,7 +109,7 @@ static esp_err_t ws_slot_alloc(httpd_handle_t hd, int sockfd, ws_client_handle_t
             }
             ws_client_handle_t h = make_handle(i, s_slots[i].gen);
             xSemaphoreGive(s_lock);
-            ESP_LOGI(WS_TAG, "Reusing slot %d for sockfd=%d", i, sockfd);
+            ESP_LOGD(WS_TAG, "Reusing slot %d for sockfd=%d", i, sockfd);
             if (out_handle) *out_handle = h;
             return ESP_OK;
         }
@@ -133,7 +135,7 @@ static esp_err_t ws_slot_alloc(httpd_handle_t hd, int sockfd, ws_client_handle_t
 
             ws_client_handle_t h = make_handle(i, s_slots[i].gen);
             xSemaphoreGive(s_lock);
-            ESP_LOGI(WS_TAG, "allocated slot %d -> handle 0x%08X (sockfd=%d)", i, h, sockfd);
+            ESP_LOGD(WS_TAG, "allocated slot %d -> handle 0x%08X (sockfd=%d)", i, h, sockfd);
             if (out_handle) *out_handle = h;
             return ESP_OK;
         }
@@ -159,7 +161,7 @@ static esp_err_t ws_slot_alloc(httpd_handle_t hd, int sockfd, ws_client_handle_t
 
             ws_client_handle_t h = make_handle(i, s_slots[i].gen);
             xSemaphoreGive(s_lock);
-            ESP_LOGI(WS_TAG, "allocated slot %d -> handle 0x%08X (sockfd=%d)", i, h, sockfd);
+            ESP_LOGD(WS_TAG, "allocated slot %d -> handle 0x%08X (sockfd=%d)", i, h, sockfd);
             if (out_handle) *out_handle = h;
             return ESP_OK;
         }
@@ -176,7 +178,7 @@ static esp_err_t ws_slot_free_by_sockfd(int sockfd)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     for (int i = 0; i < CONFIG_MAX_WS_CLIENTS; ++i) {
         if (s_slots[i].used && s_slots[i].fd == sockfd) {
-            ESP_LOGI(WS_TAG, "freeing slot %d (sockfd=%d)", i, sockfd);
+            ESP_LOGD(WS_TAG, "freeing slot %d (sockfd=%d)", i, sockfd);
             s_slots[i].used = false;
             /* don't clear generation - used to invalidate old handles */
             /* don't clear fd - used to hand out the same handle if the same fd reconnects */

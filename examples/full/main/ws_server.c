@@ -567,7 +567,7 @@ esp_err_t ws_handler(httpd_req_t *req) {
             ws_pkt.len = 0;  
         }  
 
-        ws_pkt.payload[ws_pkt.len] = 0; // null-terminate for logging
+        if (ws_pkt.payload) ws_pkt.payload[ws_pkt.len] = 0; // null-terminate for logging
 
         ESP_LOGV(WS_TAG, "Received CLOSE frame from socket %d, payload len=%d\n    payload: %s", fd, ws_pkt.len, (char*)ws_pkt.payload);
 

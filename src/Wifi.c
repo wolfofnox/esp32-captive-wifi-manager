@@ -1788,11 +1788,19 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
 
     // Log the updated captive portal settings
     if (captive_cfg.wifi_mode == WIFI_MODE_STA) {
+        char ipbuf[16] = "null";
+        if (captive_cfg.use_static_ip) {
+            esp_ip4addr_ntoa(&captive_cfg.static_ip, ipbuf, sizeof(ipbuf));
+        }
         ESP_LOGI(TAG_CAPTIVE, "Settings updated: SSID=%s, authmode=%d, static_ip=%s, mDNS=%s", 
-            captive_cfg.ssid, captive_cfg.authmode, captive_cfg.use_static_ip ? esp_ip4addr_ntoa(&captive_cfg.static_ip) : "null", captive_cfg.use_mDNS ? captive_cfg.mDNS_hostname : "null");
+            captive_cfg.ssid, captive_cfg.authmode, ipbuf, captive_cfg.use_mDNS ? captive_cfg.mDNS_hostname : "null");
     } else if (captive_cfg.wifi_mode == WIFI_MODE_AP) {
+        char ipbuf[16] = "null";
+        if (captive_cfg.use_static_ip) {
+            esp_ip4addr_ntoa(&captive_cfg.static_ip, ipbuf, sizeof(ipbuf));
+        }
         ESP_LOGI(TAG_CAPTIVE, "Settings updated: AP SSID=%s, AP Password=%s, authmode=%d, static_ip=%s, mDNS=%s", 
-            captive_cfg.ap_ssid, captive_cfg.ap_password, captive_cfg.authmode, captive_cfg.use_static_ip ? esp_ip4addr_ntoa(&captive_cfg.static_ip) : "null", captive_cfg.use_mDNS ? captive_cfg.mDNS_hostname : "null");
+            captive_cfg.ap_ssid, captive_cfg.ap_password, captive_cfg.authmode, ipbuf, captive_cfg.use_mDNS ? captive_cfg.mDNS_hostname : "null");
     }
 
     // Save settings to NVS

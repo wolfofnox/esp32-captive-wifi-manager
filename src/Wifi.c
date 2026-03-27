@@ -802,6 +802,16 @@ void wifi_init_sta() {
             .handler = sd_file_handler
         };
         httpd_register_uri_handler(server, &sd_file_uri);
+
+        #if CONFIG_WIFI_SD_FILE_SERVING_MODE_SPA
+        httpd_uri_t spa_sd_file_uri = {
+            .uri = "/*",
+            .method = HTTP_HEAD,
+            .handler = sd_file_handler
+        };
+        httpd_register_uri_handler(server, &spa_sd_file_uri);
+        #endif
+
     } else {
         httpd_uri_t no_sd_card_uri = {
             .uri = "/*",
@@ -904,6 +914,16 @@ void wifi_init_ap() {
             .handler = sd_file_handler
         };
         httpd_register_uri_handler(server, &sd_file_uri);
+        
+        #if CONFIG_WIFI_SD_FILE_SERVING_MODE_SPA
+        httpd_uri_t spa_sd_file_uri = {
+            .uri = "/*",
+            .method = HTTP_HEAD,
+            .handler = sd_file_handler
+        };
+        httpd_register_uri_handler(server, &spa_sd_file_uri);
+        #endif
+
     } else {
         // need to run wildcard handler even if no SD card to have captive redirect in AP mode
         httpd_uri_t no_sd_card_uri = {
@@ -2087,10 +2107,55 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
         return ESP_OK;
     }
 
+    #if CONFIG_WIFI_SD_FILE_SERVING_MODE_SPA
+    bool is_navigation_request = true;
+    const char *last_slash = strrchr(req->uri, '/');
+    const char *last_dot = strrchr(req->uri, '.');
+    if (last_dot && (!last_slash || last_dot > last_slash)) {
+        if (!strstr(last_dot, ".html") && !strstr(last_dot, ".htm")) {
+            ESP_LOGD(TAG, "Found an asset extension in URI: %s", req->uri);
+            is_navigation_request = false;
+        }
+    }
+    ssize_t accept_len = httpd_req_get_hdr_value_len(req, "Accept");
+    if (accept_len > 0) {
+        char *accept = malloc(accept_len + 1);
+        if (httpd_req_get_hdr_value_str(req, "Accept", accept, accept_len + 1) == ESP_OK) {
+            // If Accept explicitly excludes HTML (no "text/html" and no "*/*"), not a navigation request
+            if (strstr(accept, "text/html") == NULL && strstr(accept, "*/*") == NULL) {
+                ESP_LOGD(TAG, "Accept header does not include text/html: %s", accept);
+                free(accept);
+                is_navigation_request = false;
+            }
+        }
+        free(accept);
+    }
+    if (is_navigation_request) {
+        ESP_LOGD(TAG, "Handling as navigation request, serving index.html for URI: %s", req->uri);
+        char filepath[32];
+        snprintf(filepath, sizeof(filepath), "%s/index.html", SD_CARD_MOUNT_POINT);
+        FILE *f = fopen(filepath, "r");
+        if (!f) {
+            ESP_LOGE(TAG, "Failed to open file: %s (%s)", filepath, strerror(errno));
+            return not_found_handler(req, HTTPD_404_NOT_FOUND);
+        }
+        httpd_resp_set_type(req, "text/html");
+        char buf[512];
+        size_t read_bytes;
+        while ((read_bytes = fread(buf, 1, sizeof(buf), f)) > 0) {
+            httpd_resp_send_chunk(req, buf, read_bytes);
+        }
+        fclose(f);
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+    }
+    #endif
+
     // Construct full filesystem path from URI
     char filepath[530];
     snprintf(filepath, sizeof(filepath), "%s%s", SD_CARD_MOUNT_POINT, req->uri);
 
+    #if CONFIG_WIFI_SD_FILE_SERVING_MODE_STATIC
     // Handle directory requests by appending index.html
     struct stat st;
     if (stat(filepath, &st) == 0 && S_ISDIR(st.st_mode)) {
@@ -2104,6 +2169,7 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
         // If URI has no extension and file doesn't exist, try adding .html
         strcat(filepath, ".html");
     }
+    #endif
 
     // Open and read the requested file
     FILE *f = fopen(filepath, "r");

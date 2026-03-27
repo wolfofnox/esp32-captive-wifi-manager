@@ -92,4 +92,23 @@ config PIN_WIFI_STATUS_LED
     default 45
     help
         GPIO pin number where the SK6812 status LED is connected.
+
+choice WIFI_SD_FILE_SERVING_MODE
+    prompt "SD card file serving mode"
+    default WIFI_SD_FILE_SERVING_MODE_STATIC
+    help
+        Choose how the HTTP server should handle requests for unknown URIs when serving files from the SD card.
+    
+    config WIFI_SD_FILE_SERVING_MODE_STATIC
+        bool "Static HTML mode (serve 404 for unknown URIs)"
+    config WIFI_SD_FILE_SERVING_MODE_SPA
+        bool "Single Page Application (SPA) mode (serve index on unknown URIs)"
+endchoice
+
+config WIFI_SHOW_SPA_404_HINT
+    depends on WIFI_SD_FILE_SERVING_MODE_STATIC
+    bool "Show hint about SPA in 404 responses"
+    default y
+    help
+        If enabled, the 404 response for unknown URIs will include a hint about using SPA mode for better handling of single page applications.
 endmenu

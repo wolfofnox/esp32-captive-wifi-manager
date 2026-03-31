@@ -21,7 +21,7 @@
 </head>
 <body>
   <h2>ESP32 Captive Portal Setup</h2>
-  <a href="/captive">Refresh</a> | <a href="/restart">Restart Device</a> | <a href="/">Home</a>
+  <a href="/captive">Refresh</a> | <a href="#" onclick="fetch('/restart', {method: 'POST'}).then(response => console.log(response)).then(() => window.location.reload());">Restart Device</a> | <a href="/">Home</a>
   <form method="POST" action="/captive">
     <div id="dataWarn" class="warning red">⚠️ Failed to load settings. Please check your connection.</div>
     <div class="section">

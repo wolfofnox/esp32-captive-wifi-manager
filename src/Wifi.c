@@ -797,7 +797,7 @@ void wifi_init_sta() {
 
     httpd_uri_t restart_uri = {
         .uri = "/restart",
-        .method = HTTP_GET,
+        .method = HTTP_POST,
         .handler = restart_handler
     };
     httpd_register_uri_handler(server, &restart_uri);
@@ -909,7 +909,7 @@ void wifi_init_ap() {
 
     httpd_uri_t restart_uri = {
         .uri = "/restart",
-        .method = HTTP_GET,
+        .method = HTTP_POST,
         .handler = restart_handler
     };
     httpd_register_uri_handler(server, &restart_uri);
@@ -1950,15 +1950,27 @@ esp_err_t index_html_get_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// Restart from a background task so the HTTP server can finish sending
+// the response and close the connection gracefully before reboot.
+static void restart_delayed_task(void *pvParameter) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+    vTaskDelete(NULL);
+}
+
 /**
  * @brief HTTP handler for /restart endpoint (restarts ESP32).
  */
 esp_err_t restart_handler(httpd_req_t *req) {
-    httpd_resp_set_status(req, "302 Temporary Redirect");
-    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_set_status(req, "302 Found");
     httpd_resp_send(req, "Restarting...", HTTPD_RESP_USE_STRLEN);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    esp_restart();
+
+    BaseType_t r = xTaskCreate(restart_delayed_task, "restart_delayed", 2048, NULL, tskIDLE_PRIORITY + 1, NULL);
+    if (r != pdPASS) {
+        // If task creation failed, fall back to delaying in-place (best-effort)
+        esp_restart();
+    }
+
     return ESP_OK;
 }
 

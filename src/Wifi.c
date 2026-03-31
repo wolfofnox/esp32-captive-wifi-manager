@@ -10,6 +10,7 @@
 
 #include "sdkconfig.h"
 
+#undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_WIFI
 #include "esp_log.h"
 #include "esp_event.h"
@@ -33,10 +34,12 @@
 #include <netinet/in.h>
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "time.h"
 #include "esp_sntp.h"
+#include <sys/stat.h>
 
 #pragma region Variables & Config
 
@@ -487,6 +490,9 @@ void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id
  */
 esp_err_t wifi_init() {
     esp_log_level_set("dns_redirect_server", CONFIG_LOG_LEVEL_WIFI < ESP_LOG_WARN ? CONFIG_LOG_LEVEL_WIFI : ESP_LOG_WARN); // Set log level for this module
+    esp_log_level_set(TAG, CONFIG_LOG_LEVEL_WIFI);
+    esp_log_level_set(TAG_CAPTIVE, CONFIG_LOG_LEVEL_WIFI);
+    esp_log_level_set(TAG_SD, CONFIG_LOG_LEVEL_WIFI);
 
     ESP_LOGI(TAG, "Initializing WiFi...");
 

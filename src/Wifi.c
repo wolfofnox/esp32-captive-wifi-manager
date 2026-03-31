@@ -435,6 +435,16 @@ esp_err_t wifi_status_json_handler(httpd_req_t* req);
 esp_err_t sd_file_handler(httpd_req_t* req);
 
 /**
+ * @brief Helper function to serve a file from SD card with appropriate caching headers.
+ * 
+ * @param req HTTP request handle
+ * @param filepath Path to the file on SD card to serve
+ * @param serve_mode Mode for serving the file (revalidate, no-cache, immutable)
+ * @return ESP_OK on success, error code on failure
+ */
+esp_err_t send_sd_file(httpd_req_t* req, const char* filepath);
+
+/**
  * @brief HTTP GET handler for /restart endpoint (reboots device).
  * 
  * @param req HTTP request handle
@@ -1956,12 +1966,19 @@ esp_err_t restart_handler(httpd_req_t *req) {
  * @brief HTTP error handler for 404.
  */
 esp_err_t not_found_handler(httpd_req_t *req, httpd_err_code_t error) {
-    char text[256];
+    #if CONFIG_WIFI_SHOW_SPA_404_HINT
+    char text[300];
+    #else
+    char text[128];
+    #endif
     size_t len = 0;
     len += snprintf(text + len, sizeof(text) - len, "404 Not Found\n\n");
     len += snprintf(text + len, sizeof(text) - len, "URI: %s\n", req->uri);
     len += snprintf(text + len, sizeof(text) - len, "Method: %s\n", (req->method == HTTP_GET) ? "GET" : "POST");
     len += snprintf(text + len, sizeof(text) - len, "Arguments:\n");
+    #if CONFIG_WIFI_SHOW_SPA_404_HINT
+    len += snprintf(text + len, sizeof(text) - len, "\nHint: If using an SPA framework (React, Vue, Angular, etc.) and see this error when routing directly, try setting the menuconfig option WIFI_SD_FILE_SERVING_MODE to SPA mode.");
+    #endif
     char query[128];
     size_t query_len = httpd_req_get_url_query_len(req) + 1;
     if (query_len > 1) {
@@ -2002,6 +2019,30 @@ esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     httpd_resp_send(req, json, strlen(json));
     ESP_LOGV(TAG_CAPTIVE, "WiFi status JSON sent: %s", json);
     return ESP_OK;
+}
+
+
+/* Small MIME mapping - extend as needed */
+static const char *mime_from_path(const char *path)
+{
+    const char *ext = strrchr(path, '.');
+    if (!ext) return "application/octet-stream";
+    ext++; // skip '.'
+    if (strcasecmp(ext, "html") == 0 || strcasecmp(ext, "htm") == 0) return "text/html";
+    if (strcasecmp(ext, "css") == 0) return "text/css";
+    if (strcasecmp(ext, "js") == 0) return "application/javascript";
+    if (strcasecmp(ext, "json") == 0) return "application/json";
+    if (strcasecmp(ext, "png") == 0) return "image/png";
+    if (strcasecmp(ext, "jpg") == 0 || strcasecmp(ext, "jpeg") == 0) return "image/jpeg";
+    if (strcasecmp(ext, "gif") == 0) return "image/gif";
+    if (strcasecmp(ext, "svg") == 0) return "image/svg+xml";
+    if (strcasecmp(ext, "ico") == 0) return "image/x-icon";
+    if (strcasecmp(ext, "map") == 0) return "application/octet-stream";
+    if (strcasecmp(ext, "woff") == 0) return "font/woff";
+    if (strcasecmp(ext, "woff2") == 0) return "font/woff2";
+    if (strcasecmp(ext, "ttf") == 0) return "font/ttf";
+    if (strcasecmp(ext, "mp4") == 0) return "video/mp4";
+    return "application/octet-stream";
 }
 
 /**
@@ -2112,10 +2153,8 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
     const char *last_slash = strrchr(req->uri, '/');
     const char *last_dot = strrchr(req->uri, '.');
     if (last_dot && (!last_slash || last_dot > last_slash)) {
-        if (!strstr(last_dot, ".html") && !strstr(last_dot, ".htm")) {
-            ESP_LOGD(TAG, "Found an asset extension in URI: %s", req->uri);
-            is_navigation_request = false;
-        }
+        ESP_LOGD(TAG, "Found an asset extension in URI: %s", req->uri);
+        is_navigation_request = false;
     }
     ssize_t accept_len = httpd_req_get_hdr_value_len(req, "Accept");
     if (accept_len > 0) {
@@ -2124,7 +2163,6 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
             // If Accept explicitly excludes HTML (no "text/html" and no "*/*"), not a navigation request
             if (strstr(accept, "text/html") == NULL && strstr(accept, "*/*") == NULL) {
                 ESP_LOGD(TAG, "Accept header does not include text/html: %s", accept);
-                free(accept);
                 is_navigation_request = false;
             }
         }
@@ -2132,101 +2170,307 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
     }
     if (is_navigation_request) {
         ESP_LOGD(TAG, "Handling as navigation request, serving index.html for URI: %s", req->uri);
-        char filepath[32];
-        snprintf(filepath, sizeof(filepath), "%s/index.html", SD_CARD_MOUNT_POINT);
-        FILE *f = fopen(filepath, "r");
-        if (!f) {
-            ESP_LOGE(TAG, "Failed to open file: %s (%s)", filepath, strerror(errno));
+        
+        esp_err_t r = send_sd_file(req, "/index.html");
+        if (r != ESP_OK) {
+            ESP_LOGD(TAG, "Served index.html for navigation request");
             return not_found_handler(req, HTTPD_404_NOT_FOUND);
         }
-        httpd_resp_set_type(req, "text/html");
-        char buf[512];
-        size_t read_bytes;
-        while ((read_bytes = fread(buf, 1, sizeof(buf), f)) > 0) {
-            httpd_resp_send_chunk(req, buf, read_bytes);
-        }
-        fclose(f);
-        httpd_resp_send_chunk(req, NULL, 0);
         return ESP_OK;
     }
     #endif
 
+
+    #if CONFIG_WIFI_SD_FILE_SERVING_MODE_STATIC
     // Construct full filesystem path from URI
     char filepath[530];
     snprintf(filepath, sizeof(filepath), "%s%s", SD_CARD_MOUNT_POINT, req->uri);
 
-    #if CONFIG_WIFI_SD_FILE_SERVING_MODE_STATIC
     // Handle directory requests by appending index.html
     struct stat st;
+    size_t len = strlen(filepath);
     if (stat(filepath, &st) == 0 && S_ISDIR(st.st_mode)) {
-        size_t len = strlen(filepath);
         if (len > 0 && filepath[len - 1] == '/') {
-            strcat(filepath, "index.html");
+            snprintf(filepath + len, sizeof(filepath) - len, "index.html");
         } else {
-            strcat(filepath, "/index.html");
+            snprintf(filepath + len, sizeof(filepath) - len, "/index.html");
         }
     } else if (!strchr(req->uri, '.') && stat(filepath, &st) != 0) {
         // If URI has no extension and file doesn't exist, try adding .html
-        strcat(filepath, ".html");
+        snprintf(filepath + len, sizeof(filepath) - len, ".html");
     }
     #endif
 
-    // Open and read the requested file
-    FILE *f = fopen(filepath, "r");
-    if (!f) {
-        ESP_LOGE(TAG, "Failed to open file: %s (%s)", filepath, strerror(errno));
+    esp_err_t r = send_sd_file(req, req->uri);
+    if (r == ESP_OK) {
+        ESP_LOGD(TAG, "Served file: %s", req->uri);
+        return ESP_OK;
+    } else {
+        ESP_LOGW(TAG, "Failed to serve file: %s, error: %d", req->uri, r);
         return not_found_handler(req, HTTPD_404_NOT_FOUND);
     }
+}
 
-    // Set appropriate Content-Type header based on file extension
-    if (strstr(filepath, ".html") || strstr(filepath, ".htm")) {
-        httpd_resp_set_type(req, "text/html");
-    } else if (strstr(filepath, ".css")) {
-        httpd_resp_set_type(req, "text/css");
-    } else if (strstr(filepath, ".js")) {
-        httpd_resp_set_type(req, "application/javascript");
-    } else if (strstr(filepath, ".json")) {
-        httpd_resp_set_type(req, "application/json");
-    } else if (strstr(filepath, ".png")) {
-        httpd_resp_set_type(req, "image/png");
-    } else if (strstr(filepath, ".jpg") || strstr(filepath, ".jpeg")) {
-        httpd_resp_set_type(req, "image/jpeg");
-    } else if (strstr(filepath, ".gif")) {
-        httpd_resp_set_type(req, "image/gif");
-    } else if (strstr(filepath, ".svg")) {
-        httpd_resp_set_type(req, "image/svg+xml");
-    } else if (strstr(filepath, ".ico")) {
-        httpd_resp_set_type(req, "image/x-icon");
-    } else if (strstr(filepath, ".woff")) {
-        httpd_resp_set_type(req, "font/woff");
-    } else if (strstr(filepath, ".woff2")) {
-        httpd_resp_set_type(req, "font/woff2");
-    } else if (strstr(filepath, ".ttf")) {
-        httpd_resp_set_type(req, "font/ttf");
-    } else if (strstr(filepath, ".otf")) {
-        httpd_resp_set_type(req, "font/otf");
-    } else if (strstr(filepath, ".eot")) {
-        httpd_resp_set_type(req, "application/vnd.ms-fontobject");
-    } else if (strstr(filepath, ".mp4")) {
-        httpd_resp_set_type(req, "video/mp4");
-    } else if (strstr(filepath, ".webm")) {
-        httpd_resp_set_type(req, "video/webm");
-    } else if (strstr(filepath, ".txt")) {
-        httpd_resp_set_type(req, "text/plain");
+/* Heuristic: treat path as immutable if it is under /static/ or filename contains a long hex token before ext */
+static bool is_immutable_path(const char *path)
+{
+    if (!path) return false;
+    // path-based heuristic
+    if (strstr(path, "/static/") == path || strstr(path, "/assets/") == path) return true;
+
+    // filename hash heuristic: filename like main.1a2b3c4d.js
+    const char *slash = strrchr(path, '/');
+    const char *name = slash ? slash + 1 : path;
+    const char *dot = strrchr(name, '.');
+    if (!dot) return false;
+    // look backwards for a '.' or '-' separating token before extension
+    const char *hash = NULL;
+    for (const char *p = name; p < dot; ++p) {
+        if (*p == '.' || *p == '-') hash = p;
+    }
+    if (!hash) return false;
+    size_t token_len = (size_t)(dot - hash - 1);
+    if (token_len >= 8 && token_len <= 64) {
+        // check if token is hex-like
+        size_t hex_count = 0;
+        for (const char *p = hash + 1; p < dot; ++p) {
+            if (isxdigit((unsigned char)*p)) hex_count++;
+        }
+        if (hex_count == token_len) return true;
+    }
+    return false;
+}
+
+/* days_from_civil algorithm:
+   Returns number of days since 1970-01-01 (Unix epoch) for given y,m,d.
+   y: full year (e.g., 2026)
+   m: 1..12
+   d: 1..31
+*/
+static int64_t days_from_civil(int64_t y, unsigned m, unsigned d)
+{
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);              // [0, 399]
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1; // [0, 365]
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    return era * 146097 + (int64_t)doe - 719468; // 719468 = days from civil(0,3,1) to 1970-01-01
+}
+
+/* portable_timegm:
+   Convert struct tm in UTC to time_t (seconds since 1970-01-01 UTC).
+   tm->tm_year is years since 1900, tm->tm_mon is 0..11, tm->tm_mday is 1..31.
+*/
+time_t portable_timegm(struct tm *tm)
+{
+    if (!tm) return (time_t)-1;
+
+    int64_t year = (int64_t)tm->tm_year + 1900;
+    unsigned month = (unsigned)tm->tm_mon + 1; // make 1..12
+    unsigned day = (unsigned)tm->tm_mday;
+
+    int64_t days = days_from_civil(year, month, day);
+    int64_t secs = days * 86400 + tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec;
+    return (time_t)secs;
+}
+
+/* Format RFC1123 date into buf (buf must be >= 32 bytes) */
+static void format_rfc1123(time_t t, char *buf, size_t len)
+{
+    struct tm tm;
+    gmtime_r(&t, &tm); // convert to UTC
+    strftime(buf, len, "%a, %d %b %Y %H:%M:%S GMT", &tm);
+}
+
+/* Try to parse RFC1123 timestamp to time_t. Returns true on success. Best-effort parsing. */
+static bool parse_rfc1123(const char *s, time_t *out)
+{
+    if (!s || !out) return false;
+#if defined(__GNUC__) || defined(__GLIBC__) || defined(_POSIX_TIMERS)
+    struct tm tm = {0};
+    char *res = strptime(s, "%a, %d %b %Y %H:%M:%S GMT", &tm);
+    if (!res) {
+        // try without weekday
+        res = strptime(s, "%d %b %Y %H:%M:%S GMT", &tm);
+        if (!res) return false;
+    }
+    // timegm is a GNU extension; try it first, otherwise fall back to mktime with TZ adjustment (best-effort)
+#if defined(HAVE_TIMEGM) || defined(__USE_MISC) || defined(_BSD_SOURCE) || defined(_GNU_SOURCE)
+    time_t t = portable_timegm(&tm);
+    *out = t;
+    return true;
+#else
+    // fallback: assume server local timezone is UTC (may be wrong on some systems)
+    tm.tm_isdst = 0;
+    time_t t = mktime(&tm);
+    if (t == (time_t)-1) return false;
+    *out = t;
+    return true;
+#endif
+#else
+    (void)s; (void)out;
+    return false;
+#endif
+}
+
+/* Build a weak ETag string from mtime and size (buf must be big enough) */
+static void build_weak_etag(char *buf, size_t len, time_t mtime, uint64_t size)
+{
+    // W/"<mtime>-<size>"
+    snprintf(buf, len, "W/\"%lx-%lx\"", (unsigned long)mtime, (unsigned long)size);
+}
+
+/* Main API: sends file from SD with conditional GET support and cache headers */
+esp_err_t send_sd_file(httpd_req_t *req, const char *filepath)
+{
+    if (!req || !filepath) return ESP_ERR_INVALID_ARG;
+
+    char fullpath[512];
+    // ensure filepath begins with '/'
+    const char *rel = filepath;
+    if (rel[0] != '/') {
+        // temporary buffer to build path
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", SD_CARD_MOUNT_POINT, rel);
     } else {
-        httpd_resp_set_type(req, "application/octet-stream");
+        snprintf(fullpath, sizeof(fullpath), "%s%s", SD_CARD_MOUNT_POINT, rel);
     }
 
-    // Stream file contents to client in chunks
-    char buf[512];
-    size_t read_bytes;
-    while ((read_bytes = fread(buf, 1, sizeof(buf), f)) > 0) {
-        httpd_resp_send_chunk(req, buf, read_bytes);
+    struct stat st;
+    if (stat(fullpath, &st) != 0) {
+        ESP_LOGW(TAG, "stat failed for %s: %s", fullpath, strerror(errno));
+        return ESP_ERR_NOT_FOUND;
     }
+
+    time_t mtime = st.st_mtime;
+    uint64_t fsize = (uint64_t)st.st_size;
+
+    /* Build ETag and Last-Modified */
+    char etag[64];
+    build_weak_etag(etag, sizeof(etag), mtime, fsize);
+
+    char last_modified[64];
+    format_rfc1123(mtime, last_modified, sizeof(last_modified));
+
+    /* Read request conditional headers */
+    bool not_modified = false;
+
+    ssize_t inm_len = httpd_req_get_hdr_value_len(req, "If-None-Match");
+    if (inm_len > 0) {
+        char *inm = malloc(inm_len + 1);
+        if (inm) {
+            if (httpd_req_get_hdr_value_str(req, "If-None-Match", inm, inm_len + 1) == ESP_OK) {
+                // simple substring match; handles weak/strong lists crudely
+                if (strstr(inm, etag) != NULL) {
+                    not_modified = true;
+                }
+            }
+            free(inm);
+        }
+    }
+
+    if (!not_modified) {
+        ssize_t ims_len = httpd_req_get_hdr_value_len(req, "If-Modified-Since");
+        if (ims_len > 0) {
+            char *ims = malloc(ims_len + 1);
+            if (ims) {
+                if (httpd_req_get_hdr_value_str(req, "If-Modified-Since", ims, ims_len + 1) == ESP_OK) {
+                    time_t when;
+                    if (parse_rfc1123(ims, &when)) {
+                        if (when >= mtime) {
+                            not_modified = true;
+                        }
+                    }
+                }
+                free(ims);
+            }
+        }
+    }
+
+    /* Decide Cache-Control based on compile-time mode and immutability heuristic */
+    const char *cache_control = NULL;
+#ifdef CONFIG_WIFI_SD_FILE_SERVING_MODE_SPA
+    bool immutable = is_immutable_path(filepath);
+    if (immutable) {
+        cache_control = "public, max-age=31536000, immutable";
+    } else {
+        // index and other HTML (short/no-cache), others short
+        const char *ct = mime_from_path(filepath);
+        if (ct && strcmp(ct, "text/html") == 0) {
+            cache_control = "no-cache, must-revalidate";
+        } else {
+            cache_control = "public, max-age=60";
+        }
+    }
+#else
+    /* STATIC mode: default short cache, but long for immutable heuristics */
+    bool immutable = is_immutable_path(filepath);
+    if (immutable) {
+        cache_control = "public, max-age=31536000, immutable";
+    } else {
+        cache_control = "public, max-age=60";
+    }
+#endif
+
+    /* Set headers that should always be present */
+    httpd_resp_set_hdr(req, "ETag", etag);
+    httpd_resp_set_hdr(req, "Last-Modified", last_modified);
+    httpd_resp_set_hdr(req, "Cache-Control", cache_control);
+
+    /* If not modified, reply 304 */
+    if (not_modified) {
+        ESP_LOGD(TAG, "Not modified: %s", fullpath);
+        httpd_resp_set_status(req, "304 Not Modified");
+        // No body for 304
+        return httpd_resp_send(req, NULL, 0);
+    }
+
+    /* Otherwise, stream the file */
+    const char *mime = mime_from_path(filepath);
+    if (mime) {
+        httpd_resp_set_type(req, mime);
+    }
+
+    // HEAD should return headers only
+    if (req->method == HTTP_HEAD) {
+        return httpd_resp_send(req, NULL, 0);
+    }
+
+    FILE *f = fopen(fullpath, "rb");
+    if (!f) {
+        ESP_LOGE(TAG, "Failed to open file: %s (%s)", fullpath, strerror(errno));
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    // Stream in small chunks
+    const size_t buf_size = 1024;
+    char *buf = malloc(buf_size);
+    if (!buf) {
+        fclose(f);
+        ESP_LOGE(TAG, "OOM allocating stream buffer");
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t r;
+    esp_err_t res = ESP_OK;
+    while ((r = fread(buf, 1, buf_size, f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, r) != ESP_OK) {
+            ESP_LOGW(TAG, "Client closed during send");
+            res = ESP_FAIL;
+            break;
+        }
+    }
+
+    // finish chunked response
+    if (res == ESP_OK) {
+        if (httpd_resp_send_chunk(req, NULL, 0) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to finalize chunked response");
+            res = ESP_FAIL;
+        }
+    }
+
+    free(buf);
     fclose(f);
-    httpd_resp_send_chunk(req, NULL, 0);
-    ESP_LOGD(TAG, "Serving SD file: %s", filepath);
-    return ESP_OK;
+    return res;
 }
 
 #pragma endregion

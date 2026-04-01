@@ -14,33 +14,6 @@
 #include "esp_http_server.h"
 #include "esp_netif.h"
 
-// Authentication mode constants
-#define WIFI_AUTHMODE_OPEN         0           ///< Open network (no authentication)
-#define WIFI_AUTHMODE_WPA_PSK      1           ///< WPA/WPA2-Personal (password-based)
-#define WIFI_AUTHMODE_ENTERPRISE   2           ///< WPA2/WPA3-Enterprise
-#define WIFI_AUTHMODE_INVALID      ((uint8_t)-1) ///< Invalid/unknown authentication mode
-
-/**
- * @brief Configuration structure for captive portal and WiFi settings.
- * 
- * This structure holds all WiFi and network configuration settings, including
- * credentials, IP configuration, mDNS settings, and AP configuration.
- */
-typedef struct {
-    char ssid[32];              ///< SSID of the WiFi network to connect to (STA mode)
-    uint8_t authmode;           ///< Authentication mode: WIFI_AUTHMODE_OPEN, WIFI_AUTHMODE_WPA_PSK, or WIFI_AUTHMODE_ENTERPRISE
-    char username[64];          ///< Username for WPA2-Enterprise authentication (currently unused)
-    char password[64];          ///< Password for the WiFi network
-    bool use_static_ip;         ///< Use static IP if true, DHCP otherwise
-    esp_ip4_addr_t static_ip;   ///< Static IP address (only used if use_static_ip is true)
-    bool use_mDNS;              ///< Enable mDNS service discovery if true
-    char mDNS_hostname[32];     ///< mDNS hostname (e.g., "esp32" becomes "esp32.local")
-    char service_name[64];      ///< mDNS service name for service advertisement (e.g., "ESP32 Web Server")
-    char ap_ssid[32];           ///< SSID of the access point when in AP mode
-    char ap_password[64];       ///< Password for the access point (empty string for open AP)
-    wifi_mode_t wifi_mode;      ///< WiFi mode: WIFI_MODE_STA (client), WIFI_MODE_AP (access point), or WIFI_MODE_APSTA (both)
-} captive_portal_config;
-
 /**
  * @brief Initialize the WiFi manager and start network services.
  * 
@@ -104,7 +77,24 @@ void wifi_set_led_rgb(uint32_t irgb, uint8_t brightness);
  * 
  * @note Useful for processing form data from HTTP POST requests.
  */
-void url_decode(char *str);
+static inline void url_decode(char *str) {
+    char *src = str, *dst = str;
+    while (*src) {
+        if (*src == '+') {
+            *dst++ = ' ';
+            src++;
+        } else if (*src == '%' && src[1] && src[2]) {
+            int hi = src[1], lo = src[2];
+            hi = (hi >= 'A') ? (hi & ~0x20) - 'A' + 10 : hi - '0';
+            lo = (lo >= 'A') ? (lo & ~0x20) - 'A' + 10 : lo - '0';
+            *dst++ = (char)((hi << 4) | lo);
+            src += 3;
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    *dst = '\0';
+}
 
 /**
  * @brief Get the current WiFi connection status and configuration.

@@ -2,9 +2,10 @@
 
 #include "sdkconfig.h"
 
-#include "Wifi.h"
-
 #include "Flags.h"
+#include "Server-mgr.h"
+
+#include "helpers.h"
 
 #undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_WIFI
@@ -62,8 +63,6 @@ static const char *NVS_NAMESPACE_WIFI = "wifi_settings";
 
 static const char *TAG = "Wifi: Captive";
 
-extern httpd_config_t httpd_config;
-extern httpd_handle_t server;
 extern esp_netif_t *ap_netif;
 
 /**
@@ -574,35 +573,34 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
  * @note Only registers if server handle is not NULL
  */
 esp_err_t register_captive_portal_handlers(void) {
-    if (server == NULL) return ESP_ERR_INVALID_STATE;
 
     httpd_uri_t captive_uri = {
         .uri = "/captive",
         .method = HTTP_GET,
         .handler = captive_handler
     };
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &captive_uri), TAG, "Failed to register captive handler");
+    ESP_RETURN_ON_ERROR(server_mgr_register_handler(&captive_uri), TAG, "Failed to register captive handler");
 
     httpd_uri_t captive_post_uri = {
         .uri = "/captive",
         .method = HTTP_POST,
         .handler = captive_post_handler
     };
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &captive_post_uri), TAG, "Failed to register captive POST handler");
+    ESP_RETURN_ON_ERROR(server_mgr_register_handler(&captive_post_uri), TAG, "Failed to register captive POST handler");
 
     httpd_uri_t captive_json_uri = {
         .uri = "/captive.json",
         .method = HTTP_GET,
         .handler = captive_json_handler
     };
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &captive_json_uri), TAG, "Failed to register captive JSON handler");
+    ESP_RETURN_ON_ERROR(server_mgr_register_handler(&captive_json_uri), TAG, "Failed to register captive JSON handler");
 
     httpd_uri_t scan_json_uri = {
         .uri = "/scan.json",
         .method = HTTP_GET,
         .handler = scan_json_handler
     };
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &scan_json_uri), TAG, "Failed to register scan JSON handler");
+    ESP_RETURN_ON_ERROR(server_mgr_register_handler(&scan_json_uri), TAG, "Failed to register scan JSON handler");
     return ESP_OK;
 }
 
@@ -646,8 +644,8 @@ esp_err_t wifi_start_captive() {
     }
 
     // Start HTTP server and register handlers
-    ESP_LOGD(TAG, "Starting web server on port: %d", httpd_config.server_port);
-    err = httpd_start(&server, &httpd_config);
+    ESP_LOGD(TAG, "Starting web server on port: %d", server_mgr_get_port());
+    err = server_mgr_start();
     if (err != ESP_OK) {
         esp_wifi_stop();
         ESP_RETURN_ON_ERROR(err, TAG, "Failed to start HTTP server");
@@ -656,14 +654,14 @@ esp_err_t wifi_start_captive() {
     err = register_captive_portal_handlers();
     if (err != ESP_OK) {
         esp_wifi_stop();
-        httpd_stop(server);
+        server_mgr_stop();
         ESP_RETURN_ON_ERROR(err, TAG, "Failed to register captive portal handlers");
     }
 
-    err = httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, captive_error_redirect);
+    err = server_mgr_register_err_handler(HTTPD_404_NOT_FOUND, captive_error_redirect);
     if (err != ESP_OK) {
         esp_wifi_stop();
-        httpd_stop(server);
+        server_mgr_stop();
         ESP_RETURN_ON_ERROR(err, TAG, "Failed to register error handler");
     }
 
@@ -672,7 +670,7 @@ esp_err_t wifi_start_captive() {
     dns_server_handle_t h = start_dns_server(&dns_config);
     if (h == NULL) {
         esp_wifi_stop();
-        httpd_stop(server);
+        server_mgr_stop();
         ESP_RETURN_ON_ERROR(ESP_FAIL, TAG, "Failed to start DNS server");
     }
     return ESP_OK;

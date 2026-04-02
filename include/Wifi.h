@@ -9,6 +9,7 @@
 #ifndef WIFI_HANDLER_H
 #define WIFI_HANDLER_H
 
+#include "helpers.h"
 #include "esp_wifi.h"
 #include "esp_err.h"
 #include "esp_http_server.h"
@@ -66,35 +67,6 @@ esp_err_t wifi_register_http_handler(httpd_uri_t *uri);
  * @note This is a deprecated feature and the LED interface may be improved in future versions.
  */
 void wifi_set_led_rgb(uint32_t irgb, uint8_t brightness);
-
-/**
- * @brief Decode a URL-encoded string in place.
- * 
- * Converts URL-encoded characters (like %20 for space, + for space)
- * to their normal ASCII representation. The string is modified in place.
- * 
- * @param str Pointer to null-terminated string to decode (modified in place)
- * 
- * @note Useful for processing form data from HTTP POST requests.
- */
-static inline void url_decode(char *str) {
-    char *src = str, *dst = str;
-    while (*src) {
-        if (*src == '+') {
-            *dst++ = ' ';
-            src++;
-        } else if (*src == '%' && src[1] && src[2]) {
-            int hi = src[1], lo = src[2];
-            hi = (hi >= 'A') ? (hi & ~0x20) - 'A' + 10 : hi - '0';
-            lo = (lo >= 'A') ? (lo & ~0x20) - 'A' + 10 : lo - '0';
-            *dst++ = (char)((hi << 4) | lo);
-            src += 3;
-        } else {
-            *dst++ = *src++;
-        }
-    }
-    *dst = '\0';
-}
 
 /**
  * @brief Get the current WiFi connection status and configuration.

@@ -12,10 +12,12 @@
 
 #include "Flags.h"
 #include "Captive.h"
+#include "Server-mgr.h"
 
 #undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_WIFI
 #include "esp_log.h"
+#include "esp_check.h"
 #include "esp_mac.h"      // for MAC2STR macro
 #include "lwip/inet.h"
 #include "mdns.h"
@@ -51,12 +53,6 @@ static const char *TAG = "Wifi";
 /** @brief Log tag for SD card related messages */
 static const char *TAG_SD = "Wifi-SD_Card";
 
-/** @brief Registry array for storing custom HTTP handlers registered by the application */
-static httpd_uri_t custom_handlers[CONFIG_WIFI_MAX_CUSTOM_HTTP_HANDLERS];
-
-/** @brief Count of currently registered custom HTTP handlers */
-static size_t custom_handler_count = 0;
-
 /** @brief Maximum number of client IPs to track for captive portal redirect */
 #define MAX_REDIRECTED_IPS 10
 
@@ -66,17 +62,11 @@ static uint32_t redirected_ips[MAX_REDIRECTED_IPS];
 /** @brief Number of IPs currently tracked in redirected_ips array */
 static int redirected_count = 0;
 
-/** @brief HTTP server handle, NULL when server is not running */
-httpd_handle_t server = NULL;
-
 /** @brief Counter for consecutive STA connection failures */
 static int sta_fails_count = 0;
 
 /** @brief Flag indicating whether SD card is mounted and available */
 bool SD_card_present = false;
-
-/** @brief HTTP server configuration structure */
-httpd_config_t httpd_config = HTTPD_DEFAULT_CONFIG();
 
 /** @brief Network interface handles for AP and STA modes */
 esp_netif_t *ap_netif, *sta_netif;
@@ -243,13 +233,6 @@ void wifi_flags_listener_task(void *pvParameter);
 // HTTP handler registration helpers
 
 /**
- * @brief Register all custom HTTP handlers with the server.
- * 
- * Called when transitioning to STA or AP mode to activate custom handlers.
- */
-void register_custom_http_handlers(void);
-
-/**
  * @brief HTTP 404 error handler.
  * 
  * @param req HTTP request handle
@@ -383,17 +366,11 @@ esp_err_t wifi_init() {
     // Register event handlers for WiFi and IP events
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-
-    // Configure HTTP server
-    httpd_config.lru_purge_enable = true;
-    httpd_config.max_uri_handlers = CONFIG_WIFI_MAX_CUSTOM_HTTP_HANDLERS + 8;
-    httpd_config.uri_match_fn = httpd_uri_match_wildcard;
-    httpd_config.stack_size = 6144;  // Increase from default 4096 to handle captive portal detection bursts
     
     // Set up default HTTP server configuration
     ap_netif = esp_netif_create_default_wifi_ap();
     sta_netif = esp_netif_create_default_wifi_sta();
-    
+
     // Init WiFi with RAM-only storage
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -445,10 +422,7 @@ esp_err_t mount_sd_card() {
         .max_transfer_sz = 4096,  // Default transfer size
     };
     esp_err_t ret = spi_bus_initialize(host.slot, &bus_cfg, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG_SD, "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
-        return ret;
-    }
+    ESP_RETURN_ON_ERROR(ret, TAG_SD, "Failed to initialize SPI bus for SD card: %s", esp_err_to_name(ret));
 
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_config.gpio_cs = CONFIG_PIN_WIFI_SD_CS;
@@ -464,10 +438,7 @@ esp_err_t mount_sd_card() {
         .allocation_unit_size = 16 * 1024, // Allocation unit size
     };
     ret = esp_vfs_fat_sdspi_mount(SD_CARD_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG_SD, "Failed to mount SD card file system: %s", esp_err_to_name(ret));
-        return ret;
-    }
+    ESP_RETURN_ON_ERROR(ret, TAG_SD, "Failed to mount SD card file system: %s", esp_err_to_name(ret));
 
     SD_card_present = true;
 
@@ -564,10 +535,10 @@ void wifi_init_sta() {
     inet_ntoa_r(ip_info.ip.addr, ip_addr_str, 16);
     ESP_LOGD(TAG, "Set up STA with IP: %s", ip_addr_str);
 
-    ESP_LOGD(TAG, "Starting web server on port: %d", httpd_config.server_port);
-    ESP_ERROR_CHECK(httpd_start(&server, &httpd_config));
+    ESP_LOGD(TAG, "Starting web server on port: %d", server_mgr_get_port());
+    ESP_ERROR_CHECK(server_mgr_start());
 
-    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, not_found_handler);
+    server_mgr_register_err_handler(HTTPD_404_NOT_FOUND, not_found_handler);
 
     // Register captive portal HTTP handlers (on /captive_portal for STA mode)
     register_captive_portal_handlers();
@@ -577,21 +548,21 @@ void wifi_init_sta() {
         .method = HTTP_GET,
         .handler = index_html_get_handler
     };
-    httpd_register_uri_handler(server, &index_html_uri);
+    server_mgr_register_handler(&index_html_uri);
 
     httpd_uri_t wifi_status_json_uri = {
         .uri = "/wifi-status.json",
         .method = HTTP_GET,
         .handler = wifi_status_json_handler,
     };
-    httpd_register_uri_handler(server, &wifi_status_json_uri);
+    server_mgr_register_handler(&wifi_status_json_uri);
 
     httpd_uri_t restart_uri = {
         .uri = "/restart",
         .method = HTTP_POST,
         .handler = restart_handler
     };
-    httpd_register_uri_handler(server, &restart_uri);
+    server_mgr_register_handler(&restart_uri);
 
     if (SD_card_present) {
         // Register custom handlers
@@ -602,7 +573,7 @@ void wifi_init_sta() {
             .method = HTTP_GET,
             .handler = sd_file_handler
         };
-        httpd_register_uri_handler(server, &sd_file_uri);
+        server_mgr_register_handler(&sd_file_uri);
 
         #if CONFIG_WIFI_SD_FILE_SERVING_MODE_SPA
         httpd_uri_t spa_sd_file_uri = {
@@ -610,7 +581,7 @@ void wifi_init_sta() {
             .method = HTTP_HEAD,
             .handler = sd_file_handler
         };
-        httpd_register_uri_handler(server, &spa_sd_file_uri);
+        server_mgr_register_handler(&spa_sd_file_uri);
         #endif
 
     } else {
@@ -619,7 +590,7 @@ void wifi_init_sta() {
             .method = HTTP_GET,
             .handler = no_sd_card_handler
         };
-        httpd_register_uri_handler(server, &no_sd_card_uri);
+        server_mgr_register_handler(&no_sd_card_uri);
     }
 
     bool use_mDNS;
@@ -681,10 +652,10 @@ void wifi_init_ap() {
     inet_ntoa_r(ip_info.ip.addr, ip_addr_str, 16);
     ESP_LOGI(TAG, "Set up AP with IP: %s", ip_addr_str);
 
-    ESP_LOGD(TAG, "Starting web server on port: %d", httpd_config.server_port);
-    ESP_ERROR_CHECK(httpd_start(&server, &httpd_config));
+    ESP_LOGD(TAG, "Starting web server on port: %d", server_mgr_get_port());
+    ESP_ERROR_CHECK(server_mgr_start());
 
-    ESP_ERROR_CHECK(httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, not_found_handler));
+    ESP_ERROR_CHECK(server_mgr_register_err_handler(HTTPD_404_NOT_FOUND, not_found_handler));
 
     // Register captive portal HTTP handlers (on /captive_portal for STA mode)
     register_captive_portal_handlers();
@@ -694,21 +665,21 @@ void wifi_init_ap() {
         .method = HTTP_GET,
         .handler = index_html_get_handler
     };
-    httpd_register_uri_handler(server, &index_html_uri);
+    server_mgr_register_handler(&index_html_uri);
 
     httpd_uri_t wifi_status_json_uri = {
         .uri = "/wifi-status.json",
         .method = HTTP_GET,
         .handler = wifi_status_json_handler,
     };
-    httpd_register_uri_handler(server, &wifi_status_json_uri);
+    server_mgr_register_handler(&wifi_status_json_uri);
 
     httpd_uri_t restart_uri = {
         .uri = "/restart",
         .method = HTTP_POST,
         .handler = restart_handler
     };
-    httpd_register_uri_handler(server, &restart_uri);
+    server_mgr_register_handler(&restart_uri);
 
     if (SD_card_present) {
         // Register custom handlers
@@ -719,7 +690,7 @@ void wifi_init_ap() {
             .method = HTTP_GET,
             .handler = sd_file_handler
         };
-        httpd_register_uri_handler(server, &sd_file_uri);
+        server_mgr_register_handler(&sd_file_uri);
         
         #if CONFIG_WIFI_SD_FILE_SERVING_MODE_SPA
         httpd_uri_t spa_sd_file_uri = {
@@ -727,7 +698,7 @@ void wifi_init_ap() {
             .method = HTTP_HEAD,
             .handler = sd_file_handler
         };
-        httpd_register_uri_handler(server, &spa_sd_file_uri);
+        server_mgr_register_handler(&spa_sd_file_uri);
         #endif
 
     } else {
@@ -737,7 +708,7 @@ void wifi_init_ap() {
             .method = HTTP_GET,
             .handler = no_sd_card_handler
         };
-        httpd_register_uri_handler(server, &no_sd_card_uri);
+        server_mgr_register_handler(&no_sd_card_uri);
     }
 
     bool use_mDNS;
@@ -752,74 +723,6 @@ void wifi_init_ap() {
         ESP_LOGI(TAG, "mDNS started: http://%s.local", mDNS_hostname);
         ESP_LOGI(TAG, "mDNS service started: %s", service_name);
         mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
-    }
-}
-
-/**
- * @brief Register a custom HTTP handler for use in STA/AP modes.
- * 
- * Stores the handler in a registry and registers it immediately if the server
- * is running in STA or AP mode (not captive portal mode). Handlers are
- * re-registered automatically when switching modes.
- * 
- * @param uri Pointer to httpd_uri_t structure defining the handler
- * @return ESP_OK on success
- * @return ESP_ERR_INVALID_ARG if uri or handler is NULL
- * @return ESP_ERR_NO_MEM if maximum handlers exceeded
- * @return Error code from httpd_register_uri_handler on registration failure
- */
-esp_err_t wifi_register_http_handler(httpd_uri_t *uri) {
-    if (uri == NULL || uri->uri == NULL || uri->handler == NULL) {
-        ESP_LOGE(TAG, "Cannot register handler: uri or handler is NULL");
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (custom_handler_count >= CONFIG_WIFI_MAX_CUSTOM_HTTP_HANDLERS) {
-        ESP_LOGE(TAG, "Custom handler registry full");
-        return ESP_ERR_NO_MEM;
-    }
-    custom_handlers[custom_handler_count] = *uri;
-    custom_handler_count++;
-
-    // Register immediately if server is running and in STA mode
-    if (server) {
-        wifi_mode_t mode;
-        esp_wifi_get_mode(&mode);
-        
-        bool is_captive_mode = false;
-        if (mode == WIFI_MODE_APSTA || mode == WIFI_MODE_AP) {
-            wifi_config_t ap_config;
-            esp_wifi_get_config(WIFI_IF_AP, &ap_config);
-            is_captive_mode = (strcmp((char*)ap_config.ap.ssid, "ESP32_Captive_Portal") == 0);
-        }
-        
-        if (!is_captive_mode) {
-            esp_err_t err = httpd_register_uri_handler(server, uri);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to register custom handler for %s: %s", uri->uri, esp_err_to_name(err));
-            }
-            return err;
-        } else {
-            ESP_LOGD(TAG, "Custom handler %s stored, will register when switching to STA/AP mode", uri->uri);
-        }
-    }
-    return ESP_OK;
-}
-
-/**
- * @brief Register all stored custom HTTP handlers with the server.
- * 
- * Iterates through the custom handler registry and registers each handler
- * with the HTTP server. Logs errors but continues on failure.
- * 
- * @note Only registers if server handle is not NULL
- */
-void register_custom_http_handlers(void) {
-    if (server == NULL) return;
-    for (size_t i = 0; i < custom_handler_count; ++i) {
-        esp_err_t err = httpd_register_uri_handler(server, &custom_handlers[i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to register custom handler for %s: %s", custom_handlers[i].uri, esp_err_to_name(err));
-        }
     }
 }
 
@@ -927,10 +830,7 @@ void wifi_flags_listener_task(void *pvParameter) {
                 wifi_flags_clear_bits(SWITCH_TO_STA_BIT);
                 continue;
             }
-            if (server) {
-                httpd_stop(server);
-                server = NULL;
-            }
+            server_mgr_stop();
             esp_wifi_stop();
             mdns_free(); // Free mDNS if exists
             wifi_flags_clear_bits(SWITCH_TO_STA_BIT);
@@ -942,10 +842,7 @@ void wifi_flags_listener_task(void *pvParameter) {
             ESP_LOGI(TAG, "Switching to AP mode...");
             led_indicator_stop(led_handle, BLINK_LOADING);
             led_indicator_start(led_handle, BLINK_WIFI_AP_STARTING);
-            if (server) {
-                httpd_stop(server);
-                server = NULL;
-            }
+            server_mgr_stop();
             esp_wifi_disconnect();
             esp_wifi_stop();
             mdns_free(); // Free mDNS if exists
@@ -958,10 +855,7 @@ void wifi_flags_listener_task(void *pvParameter) {
             ESP_LOGI(TAG, "Switching to AP captive portal mode...");
             led_indicator_stop(led_handle, BLINK_LOADING);
             led_indicator_start(led_handle, BLINK_WIFI_AP_STARTING);
-            if (server) {
-                httpd_stop(server);
-                server = NULL;
-            }
+            server_mgr_stop();
             esp_wifi_disconnect();
             esp_wifi_stop();
             mdns_free(); // Free mDNS if exists

@@ -747,9 +747,9 @@ wifi_config_t get_ap_wifi_config() {
     wifi_cfg.ap.max_connection = 4;
 
     if (captive_cfg.ap_password[0] == 0) {
-        wifi_cfg.ap.authmode = WIFI_AUTHMODE_OPEN;
+        wifi_cfg.ap.authmode = WIFI_AUTH_OPEN;
     } else {
-        wifi_cfg.ap.authmode = WIFI_AUTHMODE_WPA_PSK;
+        wifi_cfg.ap.authmode = WIFI_AUTH_WPA_PSK;
     }
 
     ESP_LOGD(TAG, "AP config set: SSID: %s, password: %s, authmode: %d", wifi_cfg.ap.ssid, wifi_cfg.ap.password, wifi_cfg.ap.authmode);

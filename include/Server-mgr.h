@@ -4,7 +4,7 @@
 #include "esp_wifi.h"
 #include "esp_http_server.h"
 
-
+esp_err_t server_mgr_init();
 esp_err_t server_mgr_start();
 esp_err_t server_mgr_stop();
 esp_err_t server_mgr_register_handler(const httpd_uri_t *uri_handler);

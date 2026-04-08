@@ -19,16 +19,23 @@ static httpd_uri_t custom_handlers[CONFIG_WIFI_MAX_CUSTOM_HTTP_HANDLERS];
 /** @brief Count of currently registered custom HTTP handlers */
 static size_t custom_handler_count = 0;
 
-static const char *TAG = "Server-mgr";
+static const char *TAG = "Wifi: Server-mgr";
+
+esp_err_t server_mgr_init() {
+    esp_log_level_set(TAG, CONFIG_LOG_LEVEL_WIFI);
+    if (server != NULL) {
+        ESP_LOGW(TAG, "Server already initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+    // Configure HTTP server
+    httpd_config.lru_purge_enable = true;
+    httpd_config.max_uri_handlers = CONFIG_WIFI_MAX_CUSTOM_HTTP_HANDLERS + 8;
+    httpd_config.uri_match_fn = httpd_uri_match_wildcard;
+    httpd_config.stack_size = 6144;  // Increase from default 4096 to handle captive portal detection bursts
+    return ESP_OK;
+}
 
 esp_err_t server_mgr_start(){
-    if (server == NULL) {
-        // Configure HTTP server
-        httpd_config.lru_purge_enable = true;
-        httpd_config.max_uri_handlers = CONFIG_WIFI_MAX_CUSTOM_HTTP_HANDLERS + 8;
-        httpd_config.uri_match_fn = httpd_uri_match_wildcard;
-        httpd_config.stack_size = 6144;  // Increase from default 4096 to handle captive portal detection bursts
-    }
     return httpd_start(&server, &httpd_config);
 }
 

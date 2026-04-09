@@ -271,7 +271,7 @@ esp_err_t wifi_init() {
     // Configure WiFi to store settings in RAM only
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
-    wifi_init_captive();
+    ESP_ERROR_CHECK(wifi_init_captive());
 
     // Decide startup mode based on saved wifi_mode and STA config
     if (get_wifi_mode() == WIFI_MODE_AP) {
@@ -404,7 +404,7 @@ void wifi_flags_listener_task(void *pvParameter) {
         // Wait for any relevant event bit
         EventBits_t eventBits = wifi_flags_wait_for_bits(
             SWITCH_TO_STA_BIT | SWITCH_TO_AP_BIT | SWITCH_TO_CAPTIVE_AP_BIT | RECONECT_BIT | mDNS_CHANGE_BIT | SYNC_TIME_BIT,
-            portMAX_DELAY, true);
+            portMAX_DELAY);
         ESP_LOGV(TAG, "Received event bits: %c%c%c%c%c%c%c%c%c%c",
             eventBits & BIT9 ? '1' : '0',
             eventBits & BIT8 ? '1' : '0',
@@ -528,7 +528,6 @@ void wifi_flags_listener_task(void *pvParameter) {
             sync_time(true);
             wifi_flags_clear_bits(SYNC_TIME_BIT);
         }
-        wifi_flags_give_mutex(); // Give mutex after processing events to allow other tasks to set/clear bits
     }
 } 
 

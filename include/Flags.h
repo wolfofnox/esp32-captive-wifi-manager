@@ -29,5 +29,4 @@ void wifi_flags_init(void);
 void wifi_flags_set_bits(EventBits_t bits_to_set);
 void wifi_flags_clear_bits(EventBits_t bits_to_clear);
 EventBits_t wifi_flags_get_bits(void);
-EventBits_t wifi_flags_wait_for_bits(EventBits_t bits_to_wait, TickType_t ticks_to_wait, bool take_mutex_on_exit);
-void wifi_flags_give_mutex(void);
+EventBits_t wifi_flags_wait_for_bits(EventBits_t bits_to_wait, TickType_t ticks_to_wait);

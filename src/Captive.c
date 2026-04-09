@@ -615,7 +615,7 @@ esp_err_t wifi_start_captive() {
     ESP_LOGI(TAG, "Starting AP mode for captive portal...");
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "Failed to set WiFi mode");
-    wifi_config_t wifi_cfg = get_captive_ap_wifi_config(&captive_cfg);
+    wifi_config_t wifi_cfg = get_captive_ap_wifi_config();
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &wifi_cfg), TAG, "Failed to set WiFi config");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Failed to start WiFi");
     
@@ -716,11 +716,11 @@ wifi_config_t get_sta_wifi_config() {
     strcpy((char *)wifi_cfg.sta.ssid, captive_cfg.ssid);
     if (captive_cfg.authmode == WIFI_AUTHMODE_OPEN) {
         strcpy((char *)wifi_cfg.sta.password, "");
-        wifi_cfg.sta.threshold.authmode = WIFI_AUTHMODE_OPEN;
+        wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
         ESP_LOGD(TAG, "STA config set: Authmode: 0, SSID: %s, open network (no password)", wifi_cfg.sta.ssid);
     } else {
         strcpy((char *)wifi_cfg.sta.password, captive_cfg.password);
-        wifi_cfg.sta.threshold.authmode = WIFI_AUTHMODE_WPA_PSK;
+        wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA_WPA2_PSK;
         ESP_LOGD(TAG, "STA config set: Authmode: 1, SSID: %s, password: %s", wifi_cfg.sta.ssid, wifi_cfg.sta.password);
     }
 
@@ -749,7 +749,7 @@ wifi_config_t get_ap_wifi_config() {
     if (captive_cfg.ap_password[0] == 0) {
         wifi_cfg.ap.authmode = WIFI_AUTH_OPEN;
     } else {
-        wifi_cfg.ap.authmode = WIFI_AUTH_WPA_PSK;
+        wifi_cfg.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
     }
 
     ESP_LOGD(TAG, "AP config set: SSID: %s, password: %s, authmode: %d", wifi_cfg.ap.ssid, wifi_cfg.ap.password, wifi_cfg.ap.authmode);

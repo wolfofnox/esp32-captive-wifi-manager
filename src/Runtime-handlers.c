@@ -659,7 +659,7 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
     ESP_RETURN_ON_ERROR(server_mgr_register_err_handler(HTTPD_404_NOT_FOUND, not_found_handler), TAG, "Failed to register 404 handler");
 
     // Register captive portal HTTP handlers (on /captive_portal for STA mode)
-    register_captive_portal_handlers();
+    ESP_RETURN_ON_ERROR(register_captive_portal_handlers(), TAG, "Failed to register captive portal handlers");
 
     httpd_uri_t index_html_uri = {
         .uri = "/index.html",
@@ -684,7 +684,7 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
 
     if (sd_card_present) {
         // Register custom handlers
-        register_custom_http_handlers();
+        ESP_RETURN_ON_ERROR(register_custom_http_handlers(), TAG, "Failed to register custom HTTP handlers");
 
         httpd_uri_t sd_file_uri = {
             .uri = "/*",

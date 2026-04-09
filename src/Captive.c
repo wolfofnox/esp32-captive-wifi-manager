@@ -24,7 +24,7 @@ typedef enum {
     WIFI_AUTHMODE_OPEN = 0,
     WIFI_AUTHMODE_WPA_PSK = 1,
     WIFI_AUTHMODE_ENTERPRISE = 2,
-    WIFI_AUTHMODE_INVALID = -1
+    WIFI_AUTHMODE_INVALID = 255
 } wifi_captive_auth_mode_t;
 
 /**

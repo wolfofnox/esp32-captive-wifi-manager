@@ -14,6 +14,7 @@
 
 #include "mdns.h"
 #include "lwip/inet.h"
+#include "esp_netif.h"
 
 static const char *TAG = "Wifi: AP";
 

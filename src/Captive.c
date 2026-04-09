@@ -220,14 +220,16 @@ void set_nvs_wifi_settings(captive_portal_config *cfg) {
  */
 static void json_escape(const char *src, char *dst, size_t dst_size) {
     size_t out = 0;
-    for (const char *p = src; *p && out + 2 < dst_size; p++) {
+    for (const char *p = src; *p && dst_size > 1; p++) {
         unsigned char c = (unsigned char)*p;
         if (c == '"' || c == '\\') {
-            if (out + 3 > dst_size) break;
+            if (dst_size < 3) break; /* need 2 chars + NUL */
             dst[out++] = '\\';
             dst[out++] = (char)c;
+            dst_size -= 2;
         } else if (c >= 0x20) {
             dst[out++] = (char)c;
+            dst_size--;
         }
         /* skip control characters */
     }
@@ -283,7 +285,7 @@ esp_err_t scan_json_handler(httpd_req_t *req) {
     for (int i = 0; i < ap_count; i++) {
         /* Escape the SSID to prevent JSON injection from malicious AP names */
         char ssid_raw[33];
-        char ssid[67]; /* worst case: every char escaped = 33*2 + NUL */
+        char ssid[67]; /* worst case: 33 chars * 2 (each escaped) + 1 (NUL) = 67 */
         snprintf(ssid_raw, sizeof(ssid_raw), "%s", ap_records[i].ssid);
         json_escape(ssid_raw, ssid, sizeof(ssid));
         uint8_t authmode;

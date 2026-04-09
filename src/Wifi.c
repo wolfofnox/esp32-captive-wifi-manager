@@ -38,7 +38,6 @@
 
 #include "time.h"
 #include "esp_sntp.h"
-#include <sys/stat.h>
 
 #pragma region Variables & Config
 
@@ -386,6 +385,14 @@ void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out
     }
 }
 
+esp_netif_t *wifi_get_ap_netif(void) {
+    return ap_netif;
+}
+
+esp_netif_t *wifi_get_sta_netif(void) {
+    return sta_netif;
+}
+
 #pragma endregion
 
 #pragma region FreeRTOS Tasks
@@ -435,6 +442,7 @@ void wifi_flags_listener_task(void *pvParameter) {
             }
             server_mgr_stop();
             esp_wifi_stop();
+            wifi_stop_captive(); // Stop DNS server if running
             mdns_free(); // Free mDNS if exists
             wifi_flags_clear_bits(SWITCH_TO_STA_BIT);
             wifi_init_sta();
@@ -449,6 +457,7 @@ void wifi_flags_listener_task(void *pvParameter) {
             server_mgr_stop();
             esp_wifi_disconnect();
             esp_wifi_stop();
+            wifi_stop_captive(); // Stop DNS server if running
             mdns_free(); // Free mDNS if exists
             wifi_init_ap();
             wifi_flags_clear_bits(SWITCH_TO_AP_BIT);

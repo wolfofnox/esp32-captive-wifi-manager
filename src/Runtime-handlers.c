@@ -6,11 +6,13 @@
 #include "Captive.h"
 #include "Flags.h"
 #include "SD-mgr.h"
+#include "Wifi.h"
 
 #undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_WIFI
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_wifi.h"
 #include "errno.h"
 #include "time.h"
 #include <sys/stat.h>
@@ -18,16 +20,11 @@
 #include "lwip/inet.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <stdio.h>  
-#include <string.h>  
-#include <stdlib.h>  
-#include <sys/stat.h>  
-#include <ctype.h>  
-#include <sys/socket.h>  
-#include <netinet/in.h>  
-#include "lwip/inet.h"  
-#include "freertos/FreeRTOS.h"  
-#include "freertos/task.h"  
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 /** @brief Maximum number of client IPs to track for captive portal redirect */
 #define MAX_REDIRECTED_IPS 10
@@ -39,8 +36,6 @@ static uint32_t redirected_ips[MAX_REDIRECTED_IPS];
 static int redirected_count = 0;
 
 static const char *TAG = "Wifi: Runtime-handlers";
-
-extern esp_netif_t *ap_netif, *sta_netif;
 
 /**
  * @brief HTTP 404 error handler.
@@ -103,7 +98,7 @@ esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     char json[256];
     EventBits_t bits = wifi_flags_get_bits();
     esp_netif_ip_info_t ip_info;
-    esp_netif_get_ip_info(sta_netif, &ip_info);
+    esp_netif_get_ip_info(wifi_get_sta_netif(), &ip_info);
     bool connected = (bits & CONNECTED_BIT) != 0;
     char ip_str[IP4ADDR_STRLEN_MAX];
     esp_ip4addr_ntoa(&ip_info.ip, ip_str, IP4ADDR_STRLEN_MAX);
@@ -568,7 +563,7 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
                 snprintf(location, sizeof(location), "http://%s.local/", mDNS_hostname);
             } else {
                 esp_netif_ip_info_t ip_info;
-                esp_netif_get_ip_info(ap_netif, &ip_info);
+                esp_netif_get_ip_info(wifi_get_ap_netif(), &ip_info);
                 char ip_addr[16];
                 inet_ntoa_r(ip_info.ip.addr, ip_addr, 16);
                 snprintf(location, sizeof(location), "http://%s/", ip_addr);
@@ -599,14 +594,16 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
     ssize_t accept_len = httpd_req_get_hdr_value_len(req, "Accept");
     if (accept_len > 0) {
         char *accept = malloc(accept_len + 1);
-        if (httpd_req_get_hdr_value_str(req, "Accept", accept, accept_len + 1) == ESP_OK) {
-            // If Accept explicitly excludes HTML (no "text/html" and no "*/*"), not a navigation request
-            if (strstr(accept, "text/html") == NULL && strstr(accept, "*/*") == NULL) {
-                ESP_LOGD(TAG, "Accept header does not include text/html: %s", accept);
-                is_navigation_request = false;
+        if (accept != NULL) {
+            if (httpd_req_get_hdr_value_str(req, "Accept", accept, accept_len + 1) == ESP_OK) {
+                // If Accept explicitly excludes HTML (no "text/html" and no "*/*"), not a navigation request
+                if (strstr(accept, "text/html") == NULL && strstr(accept, "*/*") == NULL) {
+                    ESP_LOGD(TAG, "Accept header does not include text/html: %s", accept);
+                    is_navigation_request = false;
+                }
             }
+            free(accept);
         }
-        free(accept);
     }
     if (is_navigation_request) {
         ESP_LOGD(TAG, "Handling as navigation request, serving index.html for URI: %s", req->uri);

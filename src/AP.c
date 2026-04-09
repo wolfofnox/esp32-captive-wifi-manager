@@ -6,19 +6,19 @@
 #include "Runtime-handlers.h"
 #include "SD-mgr.h"
 #include "Captive.h"
+#include "Wifi.h"
 
 #undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_WIFI
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_wifi.h"
 
 #include "mdns.h"
 #include "lwip/inet.h"
 #include "esp_netif.h"
 
 static const char *TAG = "Wifi: AP";
-
-extern esp_netif_t *ap_netif;
 
 /**
  * @brief Initialize WiFi in AP mode.
@@ -42,7 +42,7 @@ esp_err_t wifi_init_ap() {
 
     // Configure AP IP address
     esp_netif_ip_info_t ip_info = {0};
-    ESP_RETURN_ON_ERROR(esp_netif_dhcps_stop(ap_netif), TAG, "Failed to stop DHCP server");  // Stop DHCP SERVER
+    ESP_RETURN_ON_ERROR(esp_netif_dhcps_stop(wifi_get_ap_netif()), TAG, "Failed to stop DHCP server");  // Stop DHCP SERVER
     bool use_static_ip;
     esp_ip4_addr_t ip_addr;
     get_static_ip_config(&use_static_ip, &ip_addr);
@@ -58,8 +58,8 @@ esp_err_t wifi_init_ap() {
         ip_info.netmask.addr = htonl((255 << 24) | (255 << 16) | (255 << 8) | 0);
     }
     
-    ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(ap_netif, &ip_info), TAG, "Failed to set AP IP info");
-    ESP_RETURN_ON_ERROR(esp_netif_dhcps_start(ap_netif), TAG, "Failed to start DHCP server");  // Start DHCP SERVER
+    ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(wifi_get_ap_netif(), &ip_info), TAG, "Failed to set AP IP info");
+    ESP_RETURN_ON_ERROR(esp_netif_dhcps_start(wifi_get_ap_netif()), TAG, "Failed to start DHCP server");  // Start DHCP SERVER
     
     // Log IP address
     char ip_addr_str[16];

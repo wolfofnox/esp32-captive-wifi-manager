@@ -50,3 +50,11 @@ wifi_config_t get_captive_ap_wifi_config();
 esp_err_t get_mdns_config(bool *use_mDNS, char *hostname, size_t hostname_len, char *service_name, size_t service_name_len);
 esp_err_t get_static_ip_config(bool *use_static_ip, esp_ip4_addr_t *static_ip);
 wifi_mode_t get_wifi_mode();
+
+/**
+ * @brief Stop the captive portal DNS server if it is running.
+ * 
+ * Call this when switching away from captive portal mode to release
+ * the DNS server task and its associated resources.
+ */
+void wifi_stop_captive(void);

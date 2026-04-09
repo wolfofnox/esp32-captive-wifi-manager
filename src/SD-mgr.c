@@ -62,8 +62,6 @@ esp_err_t mount_sd_card() {
     ret = esp_vfs_fat_sdspi_mount(SD_CARD_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
     ESP_RETURN_ON_ERROR(ret, TAG, "Failed to mount SD card file system: %s", esp_err_to_name(ret));
 
-    SD_card_present = true;
-
     DIR *dir = opendir(SD_CARD_MOUNT_POINT);
     if (!dir) {
         ESP_LOGE(TAG, "Failed to open SD card directory");

@@ -80,6 +80,20 @@ void wifi_set_led_rgb(uint32_t irgb, uint8_t brightness);
  * @param out_ssid Pointer to char* that will be set to a newly allocated string containing the connected SSID (caller must free), or NULL if not connected
  * @param out_ap_ssid Pointer to char* that will be set to a newly allocated string containing the AP SSID if in AP mode (caller must free), or NULL if not in AP mode
  */
-void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out_ip_str, char **out_ssid, char **out_ap_ssid); 
+void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out_ip_str, char **out_ssid, char **out_ap_ssid);
+
+/**
+ * @brief Get the AP network interface handle.
+ * 
+ * @return esp_netif_t* AP netif handle, or NULL if not yet initialized
+ */
+esp_netif_t *wifi_get_ap_netif(void);
+
+/**
+ * @brief Get the STA network interface handle.
+ * 
+ * @return esp_netif_t* STA netif handle, or NULL if not yet initialized
+ */
+esp_netif_t *wifi_get_sta_netif(void);
 
 #endif

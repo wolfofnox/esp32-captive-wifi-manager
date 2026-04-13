@@ -6,19 +6,19 @@
 #include "Runtime-handlers.h"
 #include "SD-mgr.h"
 #include "Captive.h"
+#include "Wifi.h"
 
 #undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_WIFI
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_wifi.h"
 
 #include "mdns.h"
 #include "lwip/inet.h"
 #include "esp_netif.h"
 
 static const char *TAG = "Wifi: STA";
-
-extern esp_netif_t *sta_netif;
 
 /**
  * @brief Initialize WiFi in station (client) mode.
@@ -39,7 +39,7 @@ esp_err_t wifi_init_sta() {
     // Set static IP if requested
     
     esp_netif_ip_info_t ip_info = {0};
-    esp_netif_dhcpc_stop(sta_netif);
+    esp_netif_dhcpc_stop(wifi_get_sta_netif());
     bool use_static_ip;
     esp_ip4_addr_t ip_addr;
     get_static_ip_config(&use_static_ip, &ip_addr);
@@ -48,13 +48,13 @@ esp_err_t wifi_init_sta() {
         ip_info.ip.addr = ip_addr.addr;
         ip_info.gw.addr = htonl((new_ip & 0xFFFFFF00)|0x01);    // x.x.x.1
         ip_info.netmask.addr = htonl((255 << 24) | (255 << 16) | (255 << 8) | 0);   // 255.255.255.0
-        esp_netif_set_ip_info(sta_netif, &ip_info);
+        esp_netif_set_ip_info(wifi_get_sta_netif(), &ip_info);
     } else {
-        esp_netif_dhcpc_start(sta_netif);
+        esp_netif_dhcpc_start(wifi_get_sta_netif());
     }
     
     // Log IP address
-    esp_netif_get_ip_info(sta_netif, &ip_info);
+    esp_netif_get_ip_info(wifi_get_sta_netif(), &ip_info);
     char ip_addr_str[16];
     inet_ntoa_r(ip_info.ip.addr, ip_addr_str, 16);
     ESP_LOGD(TAG, "Set up STA with IP: %s", ip_addr_str);

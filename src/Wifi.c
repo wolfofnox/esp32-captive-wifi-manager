@@ -38,7 +38,6 @@
 
 #include "time.h"
 #include "esp_sntp.h"
-#include <sys/stat.h>
 
 #pragma region Variables & Config
 
@@ -351,11 +350,12 @@ void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out
     }
 
     if (out_ssid) {
-        if (connected && strlen((const char*)get_sta_wifi_config().sta.ssid) > 0) {
-            size_t len = strlen((const char*)get_sta_wifi_config().sta.ssid) + 1;
+        wifi_config_t sta_config = get_sta_wifi_config();
+        if (connected && strlen((const char*)sta_config.sta.ssid) > 0) {
+            size_t len = strlen((const char*)sta_config.sta.ssid) + 1;
             *out_ssid = malloc(len);
             if (*out_ssid) {
-                memcpy(*out_ssid, get_sta_wifi_config().sta.ssid, len);
+                memcpy(*out_ssid, sta_config.sta.ssid, len);
             }
         } else {
             *out_ssid = NULL;
@@ -363,11 +363,12 @@ void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out
     }
 
     if (out_ap_ssid) {
-        if (in_ap && strlen((const char*)get_ap_wifi_config().ap.ssid) > 0) {
-            size_t len = strlen((const char*)get_ap_wifi_config().ap.ssid) + 1;
+        wifi_config_t ap_config = get_ap_wifi_config();
+        if (in_ap && strlen((const char*)ap_config.ap.ssid) > 0) {
+            size_t len = strlen((const char*)ap_config.ap.ssid) + 1;
             *out_ap_ssid = malloc(len);
             if (*out_ap_ssid) {
-                memcpy(*out_ap_ssid, get_ap_wifi_config().ap.ssid, len);
+                memcpy(*out_ap_ssid, ap_config.ap.ssid, len);
             }
         } else {
             *out_ap_ssid = NULL;
@@ -384,6 +385,14 @@ void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out
             *out_ip_str = NULL;
         }
     }
+}
+
+esp_netif_t *wifi_get_ap_netif(void) {
+    return ap_netif;
+}
+
+esp_netif_t *wifi_get_sta_netif(void) {
+    return sta_netif;
 }
 
 #pragma endregion
@@ -435,6 +444,7 @@ void wifi_flags_listener_task(void *pvParameter) {
             }
             server_mgr_stop();
             esp_wifi_stop();
+            wifi_stop_captive(); // Stop DNS server if running
             mdns_free(); // Free mDNS if exists
             wifi_flags_clear_bits(SWITCH_TO_STA_BIT);
             wifi_init_sta();
@@ -449,6 +459,7 @@ void wifi_flags_listener_task(void *pvParameter) {
             server_mgr_stop();
             esp_wifi_disconnect();
             esp_wifi_stop();
+            wifi_stop_captive(); // Stop DNS server if running
             mdns_free(); // Free mDNS if exists
             wifi_init_ap();
             wifi_flags_clear_bits(SWITCH_TO_AP_BIT);

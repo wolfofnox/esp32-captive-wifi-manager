@@ -5,6 +5,7 @@
 #undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_WIFI
 #include "esp_log.h"
+#include "esp_wifi.h"
 
 
 /** @brief HTTP server handle, NULL when server is not running */

@@ -1,4 +1,5 @@
 #include "Captive.h"
+#include "Wifi.h"
 
 #include "sdkconfig.h"
 
@@ -12,11 +13,15 @@
 #include "esp_log.h"
 
 #include "esp_check.h"
+#include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "dns_server.h"   // for captive portal DNS hijack
 #include "lwip/inet.h"
 #include "esp_http_server.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include <string.h>
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
@@ -49,7 +54,13 @@ typedef struct {
 } captive_portal_config;
 
 /** @brief Current captive portal and WiFi configuration */
-captive_portal_config captive_cfg = { 0 };
+static captive_portal_config captive_cfg = { 0 };
+
+/** @brief Mutex protecting captive_cfg against concurrent access */
+static SemaphoreHandle_t s_cfg_mutex = NULL;
+
+/** @brief DNS server handle for captive portal mode; NULL when not running */
+static dns_server_handle_t s_dns_server = NULL;
 
 // HTML page binary symbols (linked at build time, defined in CMakeLists.txt)
 /** @brief Start address of embedded captive portal HTML page */
@@ -62,8 +73,6 @@ extern const char captive_html_end[] asm("_binary_captive_html_end");
 static const char *NVS_NAMESPACE_WIFI = "wifi_settings";
 
 static const char *TAG = "Wifi: Captive";
-
-extern esp_netif_t *ap_netif;
 
 /**
  * @brief Fill the captive portal configuration structure with empty values.
@@ -199,6 +208,35 @@ void set_nvs_wifi_settings(captive_portal_config *cfg) {
 }
 
 /**
+ * @brief Copy src into dst, escaping JSON-special characters.
+ *
+ * Characters `"` and `\` are escaped with a backslash. ASCII control
+ * characters (< 0x20) are silently dropped to avoid breaking JSON parsers
+ * when a user-supplied string (e.g. SSID, hostname) contains them.
+ *
+ * @param src  NUL-terminated source string
+ * @param dst  Output buffer (must be at least strlen(src)*2 + 1 bytes)
+ * @param dst_size  Size of dst in bytes, including the NUL terminator
+ */
+static void json_escape(const char *src, char *dst, size_t dst_size) {
+    size_t out = 0;
+    for (const char *p = src; *p && dst_size > 1; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') {
+            if (dst_size < 3) break; /* need 2 chars + NUL */
+            dst[out++] = '\\';
+            dst[out++] = (char)c;
+            dst_size -= 2;
+        } else if (c >= 0x20) {
+            dst[out++] = (char)c;
+            dst_size--;
+        }
+        /* skip control characters */
+    }
+    dst[out] = '\0';
+}
+
+/**
  * @brief HTTP handler for serving the captive portal HTML page.
  */
 esp_err_t captive_handler(httpd_req_t *req) {
@@ -245,9 +283,12 @@ esp_err_t scan_json_handler(httpd_req_t *req) {
 
     int len = snprintf(json, sizeof(json), "{\"ap_count\": %d, \"aps\": [", ap_count);
     for (int i = 0; i < ap_count; i++) {
-        char ssid[33];
+        /* Escape the SSID to prevent JSON injection from malicious AP names */
+        char ssid_raw[33];
+        char ssid[67]; /* worst case: 33 chars * 2 (each escaped) + 1 (NUL) = 67 */
+        snprintf(ssid_raw, sizeof(ssid_raw), "%s", ap_records[i].ssid);
+        json_escape(ssid_raw, ssid, sizeof(ssid));
         uint8_t authmode;
-        snprintf(ssid, sizeof(ssid), "%s", ap_records[i].ssid);
         if (ap_records[i].authmode == WIFI_AUTH_OPEN || ap_records[i].authmode == WIFI_AUTH_OWE || ap_records[i].authmode == WIFI_AUTH_DPP) {
             authmode = WIFI_AUTHMODE_OPEN;
         } else if (ap_records[i].authmode == WIFI_AUTH_ENTERPRISE || ap_records[i].authmode == WIFI_AUTH_WPA2_ENTERPRISE || ap_records[i].authmode == WIFI_AUTH_WPA3_ENTERPRISE || ap_records[i].authmode == WIFI_AUTH_WPA2_WPA3_ENTERPRISE || ap_records[i].authmode == WIFI_AUTH_WPA3_ENT_192 || ap_records[i].authmode == WIFI_AUTH_WPA_ENTERPRISE) {
@@ -261,12 +302,12 @@ esp_err_t scan_json_handler(httpd_req_t *req) {
             ssid,
             ap_records[i].rssi,
             authmode);
-        if (len < 0 || len >= sizeof(json)) {
+        if (len < 0 || len >= (int)sizeof(json)) {
             // Buffer full, truncate
             break;
         }
     }
-    if ((len + 2) < sizeof(json)) {
+    if ((len + 2) < (int)sizeof(json)) {
         json[len++] = ']';
         json[len++] = '}';
         json[len] = '\0';
@@ -277,32 +318,59 @@ esp_err_t scan_json_handler(httpd_req_t *req) {
     }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, strlen(json));
-    ESP_LOGD(TAG, "Scan results sent: %d APs; JSON: %s", ap_count, json);
+    ESP_LOGD(TAG, "Scan results sent: %d APs", ap_count);
     return ESP_OK;
 }
 
 /**
  * @brief HTTP handler for returning saved captive portal configuration as JSON.
+ *
+ * @note Passwords are intentionally not included in the response; only a
+ * boolean indicating whether a password is currently set is exposed.
  */
 esp_err_t captive_json_handler(httpd_req_t *req) {
-    char json[512];
+    char json[640];
+    /* Escape user-controlled strings to prevent JSON injection */
+    char ssid_e[67], ap_ssid_e[67], hostname_e[67], service_e[131];
+
+    if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
+    json_escape(captive_cfg.ssid, ssid_e, sizeof(ssid_e));
+    json_escape(captive_cfg.ap_ssid, ap_ssid_e, sizeof(ap_ssid_e));
+    json_escape(captive_cfg.mDNS_hostname, hostname_e, sizeof(hostname_e));
+    json_escape(captive_cfg.service_name, service_e, sizeof(service_e));
+    int authmode = captive_cfg.authmode;
+    bool use_static_ip = captive_cfg.use_static_ip;
+    uint32_t static_ip_addr = captive_cfg.static_ip.addr;
+    bool use_mDNS = captive_cfg.use_mDNS;
+    int wifi_mode = captive_cfg.wifi_mode;
+    bool has_password = captive_cfg.password[0] != '\0';
+    bool has_ap_password = captive_cfg.ap_password[0] != '\0';
+    if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
+
+    char ip_str[16];
+    esp_ip4_addr_t tmp_ip = { .addr = static_ip_addr };
+    esp_ip4addr_ntoa(&tmp_ip, ip_str, sizeof(ip_str));
+
     snprintf(json, sizeof(json),
-        "{\"ssid\": \"%s\", \"authmode\": %d, \"password\": \"%s\", \"use_static_ip\": %s, \"static_ip\": \"%s\", \"use_mDNS\": %s, \"mDNS_hostname\": \"%s\", \"service_name\": \"%s\", \"wifi_mode\": %d, \"ap_ssid\": \"%s\", \"ap_password\": \"%s\"}",
-        captive_cfg.ssid,
-        captive_cfg.authmode,
-        captive_cfg.password,
-        captive_cfg.use_static_ip ? "true" : "false",
-        inet_ntoa(captive_cfg.static_ip.addr),
-        captive_cfg.use_mDNS ? "true" : "false",
-        captive_cfg.mDNS_hostname,
-        captive_cfg.service_name,
-        captive_cfg.wifi_mode,
-        captive_cfg.ap_ssid,
-        captive_cfg.ap_password
+        "{\"ssid\": \"%s\", \"authmode\": %d, \"has_password\": %s, "
+        "\"use_static_ip\": %s, \"static_ip\": \"%s\", "
+        "\"use_mDNS\": %s, \"mDNS_hostname\": \"%s\", \"service_name\": \"%s\", "
+        "\"wifi_mode\": %d, \"ap_ssid\": \"%s\", \"has_ap_password\": %s}",
+        ssid_e,
+        authmode,
+        has_password ? "true" : "false",
+        use_static_ip ? "true" : "false",
+        ip_str,
+        use_mDNS ? "true" : "false",
+        hostname_e,
+        service_e,
+        wifi_mode,
+        ap_ssid_e,
+        has_ap_password ? "true" : "false"
     );
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, strlen(json));
-    ESP_LOGD(TAG, "Captive portal JSON data sent: %s", json);
+    ESP_LOGD(TAG, "Captive portal JSON data sent");
     return ESP_OK;
 }
 
@@ -321,10 +389,14 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
     wifi_mode_t mode;
     ESP_ERROR_CHECK(esp_wifi_get_mode(&mode));
     ESP_LOGI(TAG, "Received POST request to update WiFi settings");
+
+    if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
+
     if (len > 0) {
         buf[len] = '\0';
-        ESP_LOGV(TAG, "POST data: %s (len = %d)", buf, len);
-        char param[32];
+        ESP_LOGV(TAG, "POST data received (len = %d)", len);
+        /* param must accommodate the largest config field (64 bytes) plus NUL */
+        char param[65];
         
         // Parse wifi_mode first
         if (httpd_query_key_value(buf, "wifi_mode", param, sizeof(param)) == ESP_OK) {
@@ -383,12 +455,14 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
                 ESP_LOGD(TAG, "Parsed Authmode: %d", new_authmode);
                 if (new_authmode == WIFI_AUTHMODE_ENTERPRISE) {
                     ESP_LOGW(TAG, "Enterprise networks (authmode 2) rejected");
+                    if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
                     httpd_resp_set_status(req, "400 Bad Request");
                     httpd_resp_send(req, "Enterprise networks not supported", HTTPD_RESP_USE_STRLEN);
                     return ESP_OK;
                 }
                 if (new_authmode < 0 || new_authmode > 1) {
                     ESP_LOGW(TAG, "Authmode out of range, rejected");
+                    if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
                     httpd_resp_set_status(req, "400 Bad Request");
                     httpd_resp_send(req, "Authmode out of range", HTTPD_RESP_USE_STRLEN);
                     return ESP_OK;
@@ -404,11 +478,11 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         }
         if (httpd_query_key_value(buf, "password", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
-            ESP_LOGD(TAG, "Parsed Password: %s", param);
             
             // Safety: If SSID changed and password is empty, reject the request
             if (ssid_changed && strlen(param) == 0 && captive_cfg.authmode == WIFI_AUTHMODE_WPA_PSK) {
                 ESP_LOGW(TAG, "SSID changed but no password provided for WPA network");
+                if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
                 httpd_resp_set_status(req, "400 Bad Request");
                 httpd_resp_send(req, "Password required for new network", HTTPD_RESP_USE_STRLEN);
                 return ESP_OK;
@@ -516,7 +590,7 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         }
     }
 
-    // Log the updated captive portal settings
+    // Log the updated captive portal settings (under mutex, already held)
     if (captive_cfg.wifi_mode == WIFI_MODE_STA) {
         char ipbuf[16] = "null";
         if (captive_cfg.use_static_ip) {
@@ -529,26 +603,37 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         if (captive_cfg.use_static_ip) {
             esp_ip4addr_ntoa(&captive_cfg.static_ip, ipbuf, sizeof(ipbuf));
         }
-        ESP_LOGI(TAG, "Settings updated: AP SSID=%s, AP Password=%s, authmode=%d, static_ip=%s, mDNS=%s", 
-            captive_cfg.ap_ssid, captive_cfg.ap_password, captive_cfg.authmode, ipbuf, captive_cfg.use_mDNS ? captive_cfg.mDNS_hostname : "null");
+        ESP_LOGI(TAG, "Settings updated: AP SSID=%s, authmode=%d, static_ip=%s, mDNS=%s", 
+            captive_cfg.ap_ssid, captive_cfg.authmode, ipbuf, captive_cfg.use_mDNS ? captive_cfg.mDNS_hostname : "null");
     }
 
     // Save settings to NVS
     set_nvs_wifi_settings(&captive_cfg);
 
-    // Determine action based on mode
+    /* Capture the bits to signal, then release the mutex before signalling
+     * so the listener task can immediately acquire it if needed. */
+    bool do_switch_sta = false, do_switch_ap = false;
+    bool do_reconnect = false, do_mdns = false;
     if (mode_changed) {
         ESP_LOGD(TAG, "WiFi mode changed to: %d", captive_cfg.wifi_mode);
-        if (captive_cfg.wifi_mode == WIFI_MODE_STA) {
-            wifi_flags_set_bits(SWITCH_TO_STA_BIT);
-        } else {
-            wifi_flags_set_bits(SWITCH_TO_AP_BIT);
-        }
+        do_switch_sta = (captive_cfg.wifi_mode == WIFI_MODE_STA);
+        do_switch_ap  = (captive_cfg.wifi_mode == WIFI_MODE_AP);
     } else if (mode == WIFI_MODE_STA) {
-        if (need_reconnect) {
+        do_reconnect = need_reconnect;
+        do_mdns = need_mdns_update;
+    }
+    if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
+
+    // Determine action based on mode
+    if (do_switch_sta) {
+        wifi_flags_set_bits(SWITCH_TO_STA_BIT);
+    } else if (do_switch_ap) {
+        wifi_flags_set_bits(SWITCH_TO_AP_BIT);
+    } else {
+        if (do_reconnect) {
             wifi_flags_set_bits(RECONECT_BIT);
         }
-        if (need_mdns_update) {
+        if (do_mdns) {
             wifi_flags_set_bits(mDNS_CHANGE_BIT);
         }
     }
@@ -614,6 +699,12 @@ esp_err_t register_captive_portal_handlers(void) {
 esp_err_t wifi_start_captive() {
     ESP_LOGI(TAG, "Starting AP mode for captive portal...");
 
+    // Stop any previously running DNS server before starting a new one
+    if (s_dns_server != NULL) {
+        stop_dns_server(s_dns_server);
+        s_dns_server = NULL;
+    }
+
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "Failed to set WiFi mode");
     wifi_config_t wifi_cfg = get_captive_ap_wifi_config();
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &wifi_cfg), TAG, "Failed to set WiFi config");
@@ -625,10 +716,9 @@ esp_err_t wifi_start_captive() {
         ESP_LOGW(TAG, "Failed to set max TX power: %s", esp_err_to_name(err));
     }
 
-
     // Log AP IP address
     esp_netif_ip_info_t ip_info;
-    err = esp_netif_get_ip_info(ap_netif, &ip_info);
+    err = esp_netif_get_ip_info(wifi_get_ap_netif(), &ip_info);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to get IP info: %s", esp_err_to_name(err));
     } else {
@@ -638,7 +728,7 @@ esp_err_t wifi_start_captive() {
     }
 
     if (wifi_cfg.ap.authmode != WIFI_AUTH_OPEN) {
-        ESP_LOGI(TAG, "SoftAP started: SSID: '%s' Password: '%s'", wifi_cfg.ap.ssid, wifi_cfg.ap.password);
+        ESP_LOGI(TAG, "SoftAP started: SSID: '%s' (password protected)", wifi_cfg.ap.ssid);
     } else {
         ESP_LOGI(TAG, "SoftAP started: SSID: '%s' No password", wifi_cfg.ap.ssid);
     }
@@ -667,8 +757,8 @@ esp_err_t wifi_start_captive() {
 
     // Start DNS server for captive portal redirection (hijack all DNS queries)
     dns_server_config_t dns_config = DNS_SERVER_CONFIG_SINGLE("*" /* all A queries */, "WIFI_AP_DEF" /* softAP netif ID */);
-    dns_server_handle_t h = start_dns_server(&dns_config);
-    if (h == NULL) {
+    s_dns_server = start_dns_server(&dns_config);
+    if (s_dns_server == NULL) {
         esp_wifi_stop();
         server_mgr_stop();
         ESP_RETURN_ON_ERROR(ESP_FAIL, TAG, "Failed to start DNS server");
@@ -680,6 +770,13 @@ esp_err_t wifi_init_captive() {
     esp_log_level_set(TAG, CONFIG_LOG_LEVEL_WIFI);
     ESP_LOGI(TAG, "Initializing WiFi in captive portal mode...");
     fill_captive_portal_config_struct(&captive_cfg);
+
+    // Create mutex protecting captive_cfg before any task can use it
+    s_cfg_mutex = xSemaphoreCreateMutex();
+    if (s_cfg_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create config mutex");
+        return ESP_ERR_NO_MEM;
+    }
     
     // Initialize NVS
     ESP_LOGI(TAG, "Initializing NVS...");
@@ -690,10 +787,10 @@ esp_err_t wifi_init_captive() {
     }
     ESP_RETURN_ON_ERROR(ret, TAG, "Failed to initialize NVS");
 
-    // Read NVS settings
+    // Read NVS settings (no mutex needed: listener task not started yet)
     get_nvs_wifi_settings(&captive_cfg);
-    ESP_LOGD(TAG, "STA SSID: %s, password: %s", captive_cfg.ssid, captive_cfg.password);
-    ESP_LOGD(TAG, "AP SSID: %s, password: %s", captive_cfg.ap_ssid, captive_cfg.ap_password);
+    ESP_LOGD(TAG, "STA SSID: %s", captive_cfg.ssid);
+    ESP_LOGD(TAG, "AP SSID: %s", captive_cfg.ap_ssid);
 
     return ESP_OK;
 }
@@ -713,6 +810,7 @@ wifi_config_t get_sta_wifi_config() {
     wifi_config_t wifi_cfg;
     esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);
 
+    if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
     strcpy((char *)wifi_cfg.sta.ssid, captive_cfg.ssid);
     if (captive_cfg.authmode == WIFI_AUTHMODE_OPEN) {
         strcpy((char *)wifi_cfg.sta.password, "");
@@ -721,8 +819,9 @@ wifi_config_t get_sta_wifi_config() {
     } else {
         strcpy((char *)wifi_cfg.sta.password, captive_cfg.password);
         wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-        ESP_LOGD(TAG, "STA config set: Authmode: 1, SSID: %s, password: %s", wifi_cfg.sta.ssid, wifi_cfg.sta.password);
+        ESP_LOGD(TAG, "STA config set: Authmode: 1, SSID: %s", wifi_cfg.sta.ssid);
     }
+    if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
 
     return wifi_cfg;
 }
@@ -741,6 +840,7 @@ wifi_config_t get_ap_wifi_config() {
     wifi_config_t wifi_cfg;
     esp_wifi_get_config(WIFI_IF_AP, &wifi_cfg);
 
+    if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
     strcpy((char *)wifi_cfg.ap.ssid, captive_cfg.ap_ssid);
     strcpy((char *)wifi_cfg.ap.password, captive_cfg.ap_password);
     wifi_cfg.ap.ssid_len = strlen(captive_cfg.ap_ssid);
@@ -751,9 +851,9 @@ wifi_config_t get_ap_wifi_config() {
     } else {
         wifi_cfg.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
     }
+    if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
 
-    ESP_LOGD(TAG, "AP config set: SSID: %s, password: %s, authmode: %d", wifi_cfg.ap.ssid, wifi_cfg.ap.password, wifi_cfg.ap.authmode);
-    
+    ESP_LOGD(TAG, "AP config set: SSID: %s, authmode: %d", wifi_cfg.ap.ssid, wifi_cfg.ap.authmode);
 
     return wifi_cfg;
 }
@@ -787,9 +887,13 @@ esp_err_t get_mdns_config(bool *use_mDNS, char *hostname, size_t hostname_len, c
     if (use_mDNS == NULL || hostname == NULL || service_name == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
     *use_mDNS = captive_cfg.use_mDNS;
-    strncpy(hostname, captive_cfg.mDNS_hostname, hostname_len);
-    strncpy(service_name, captive_cfg.service_name, service_name_len);
+    strncpy(hostname, captive_cfg.mDNS_hostname, hostname_len - 1);
+    hostname[hostname_len - 1] = '\0';
+    strncpy(service_name, captive_cfg.service_name, service_name_len - 1);
+    service_name[service_name_len - 1] = '\0';
+    if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
     return ESP_OK;
 }
 
@@ -797,11 +901,25 @@ esp_err_t get_static_ip_config(bool *use_static_ip, esp_ip4_addr_t *static_ip) {
     if (use_static_ip == NULL || static_ip == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
     *use_static_ip = captive_cfg.use_static_ip;
     *static_ip = captive_cfg.static_ip;
+    if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
     return ESP_OK;
 }
 
 wifi_mode_t get_wifi_mode() {
-    return captive_cfg.wifi_mode;
+    wifi_mode_t mode;
+    if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
+    mode = captive_cfg.wifi_mode;
+    if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
+    return mode;
+}
+
+void wifi_stop_captive(void) {
+    if (s_dns_server != NULL) {
+        stop_dns_server(s_dns_server);
+        s_dns_server = NULL;
+        ESP_LOGD(TAG, "DNS server stopped");
+    }
 }

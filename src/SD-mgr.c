@@ -71,8 +71,8 @@ esp_err_t mount_sd_card() {
         while ((entry = readdir(dir)) != NULL) {
             ESP_LOGV(TAG, "  %s", entry->d_name);
         }
+        closedir(dir);
     }
-    closedir(dir);
 
     SD_card_present = true;
     return ESP_OK;

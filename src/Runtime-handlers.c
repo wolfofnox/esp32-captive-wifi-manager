@@ -102,12 +102,26 @@ esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     bool connected = (bits & CONNECTED_BIT) != 0;
     char ip_str[IP4ADDR_STRLEN_MAX];
     esp_ip4addr_ntoa(&ip_info.ip, ip_str, IP4ADDR_STRLEN_MAX);
+    wifi_config_t wifi_cfg;
+    char sta_ssid[32];
+    if (connected) {
+        get_sta_wifi_config(&wifi_cfg);
+        strncpy(sta_ssid, (const char*)wifi_cfg.sta.ssid, sizeof(sta_ssid) - 1);
+        sta_ssid[sizeof(sta_ssid) - 1] = '\0';
+    } else {sta_ssid[0] = '\0';}
+    char ap_ssid[32];
+    if (bits & AP_MODE_BIT) {
+        get_ap_wifi_config(&wifi_cfg);
+        strncpy(ap_ssid, (const char*)wifi_cfg.ap.ssid, sizeof(ap_ssid) - 1);
+        ap_ssid[sizeof(ap_ssid) - 1] = '\0';
+    } else {ap_ssid[0] = '\0';}
+
     snprintf(json, sizeof(json), "{\"connected\": %s, \"ip\": \"%s\", \"ssid\": \"%s\", \"in_ap_mode\": %s, \"ap_ssid\": \"%s\"}",
              connected ? "true" : "false",
              ip_str,
-             connected ? (const char*)get_sta_wifi_config().sta.ssid : "",
+             sta_ssid,
              (bits & AP_MODE_BIT) ? "true" : "false",
-             (bits & AP_MODE_BIT) ? (const char*)get_ap_wifi_config().ap.ssid : "");
+             ap_ssid);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, strlen(json));
     ESP_LOGV(TAG, "WiFi status JSON sent: %s", json);

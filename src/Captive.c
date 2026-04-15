@@ -39,7 +39,7 @@ typedef enum {
  * credentials, IP configuration, mDNS settings, and AP configuration.
  */
 typedef struct {
-    char ssid[32];              ///< SSID of the WiFi network to connect to (STA mode)
+    char ssid[33];              ///< SSID of the WiFi network to connect to (STA mode) — match esp-idf AP record size (33)
     wifi_captive_auth_mode_t authmode;           ///< Authentication mode: WIFI_AUTHMODE_OPEN, WIFI_AUTHMODE_WPA_PSK, or WIFI_AUTHMODE_ENTERPRISE
     char username[64];          ///< Username for WPA2-Enterprise authentication (currently unused)
     char password[64];          ///< Password for the WiFi network
@@ -48,7 +48,7 @@ typedef struct {
     bool use_mDNS;              ///< Enable mDNS service discovery if true
     char mDNS_hostname[32];     ///< mDNS hostname (e.g., "esp32" becomes "esp32.local")
     char service_name[64];      ///< mDNS service name for service advertisement (e.g., "ESP32 Web Server")
-    char ap_ssid[32];           ///< SSID of the access point when in AP mode
+    char ap_ssid[33];           ///< SSID of the access point when in AP mode — match esp-idf AP record size (33)
     char ap_password[64];       ///< Password for the access point (empty string for open AP)
     wifi_mode_t wifi_mode;      ///< WiFi mode: WIFI_MODE_STA (client), WIFI_MODE_AP (access point)
 } captive_portal_config;
@@ -83,15 +83,15 @@ static const char *TAG = "Wifi: Captive";
  * @param cfg Pointer to the captive portal configuration structure to fill.
  */
 static inline void fill_captive_portal_config_struct(captive_portal_config *cfg) {
-    strcpy(cfg->ssid, "");
-    strcpy(cfg->password, "");
+    cfg->ssid[0] = '\0';
+    cfg->password[0] = '\0';
     cfg->use_static_ip = false;
     cfg->static_ip.addr = 0;
     cfg->use_mDNS = false;
-    strcpy(cfg->mDNS_hostname, "");
-    strcpy(cfg->service_name, "");
-    strcpy(cfg->ap_ssid, "");
-    strcpy(cfg->ap_password, "");
+    cfg->mDNS_hostname[0] = '\0';
+    cfg->service_name[0] = '\0';
+    cfg->ap_ssid[0] = '\0';
+    cfg->ap_password[0] = '\0';
     cfg->authmode = WIFI_AUTHMODE_OPEN;
     cfg->wifi_mode = WIFI_MODE_STA;  // Default to station mode
 }
@@ -415,7 +415,8 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
             url_decode(param);
             ESP_LOGD(TAG, "Parsed AP SSID: %s", param);
             if (strcmp(captive_cfg.ap_ssid, param) != 0) {
-                strcpy(captive_cfg.ap_ssid, param);
+                strncpy(captive_cfg.ap_ssid, param, sizeof(captive_cfg.ap_ssid) - 1);
+                captive_cfg.ap_ssid[sizeof(captive_cfg.ap_ssid) - 1] = '\0';
                 if (captive_cfg.wifi_mode == WIFI_MODE_AP) {
                     mode_changed = true;
                 }
@@ -427,7 +428,8 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
             ESP_LOGD(TAG, "Parsed AP Password: %s", param);
             // Only update if not empty (empty = unchanged)
             if (strlen(param) > 0 && strcmp(captive_cfg.ap_password, param) != 0) {
-                strcpy(captive_cfg.ap_password, param);
+                strncpy(captive_cfg.ap_password, param, sizeof(captive_cfg.ap_password) - 1);
+                captive_cfg.ap_password[sizeof(captive_cfg.ap_password) - 1] = '\0';
                 if (captive_cfg.wifi_mode == WIFI_MODE_AP) {
                     mode_changed = true;
                 }
@@ -443,7 +445,8 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
                     need_reconnect = true;
                     ESP_LOGD(TAG, "SSID changed, reconnecting...");
                 }
-                strcpy((char*)&captive_cfg.ssid, param);
+                strncpy(captive_cfg.ssid, param, sizeof(captive_cfg.ssid) - 1);
+                captive_cfg.ssid[sizeof(captive_cfg.ssid) - 1] = '\0';
             }
         }
         if (httpd_query_key_value(buf, "authmode", param, sizeof(param)) == ESP_OK) {
@@ -493,9 +496,10 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
                     need_reconnect = true;
                     ESP_LOGD(TAG, "Password changed, reconnecting...");
                 }
-                strcpy((char*)&captive_cfg.password, param);
+                strncpy(captive_cfg.password, param, sizeof(captive_cfg.password) - 1);
+                captive_cfg.password[sizeof(captive_cfg.password) - 1] = '\0';
             } else if (captive_cfg.authmode == WIFI_AUTHMODE_OPEN && captive_cfg.authmode != WIFI_AUTHMODE_INVALID) {
-                strcpy((char*)&captive_cfg.password, "");
+                captive_cfg.password[0] = '\0';
             }
         }
         if (captive_cfg.authmode == WIFI_AUTHMODE_INVALID) {
@@ -572,7 +576,8 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
                         ESP_LOGD(TAG, "mDNS hostname changed, updating...");
                     }
                 }
-                strcpy(captive_cfg.mDNS_hostname, param);
+                strncpy(captive_cfg.mDNS_hostname, param, sizeof(captive_cfg.mDNS_hostname) - 1);
+                captive_cfg.mDNS_hostname[sizeof(captive_cfg.mDNS_hostname) - 1] = '\0';
             }
         }
         if (httpd_query_key_value(buf, "service_name", param, sizeof(param)) == ESP_OK) {
@@ -585,7 +590,8 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
                         ESP_LOGD(TAG, "mDNS service name changed, updating...");
                     }
                 }
-                strcpy(captive_cfg.service_name, param);
+                strncpy(captive_cfg.service_name, param, sizeof(captive_cfg.service_name) - 1);
+                captive_cfg.service_name[sizeof(captive_cfg.service_name) - 1] = '\0';
             }
         }
     }
@@ -706,7 +712,8 @@ esp_err_t wifi_start_captive() {
     }
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "Failed to set WiFi mode");
-    wifi_config_t wifi_cfg = get_captive_ap_wifi_config();
+    wifi_config_t wifi_cfg;
+    get_captive_ap_wifi_config(&wifi_cfg);
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &wifi_cfg), TAG, "Failed to set WiFi config");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Failed to start WiFi");
     
@@ -806,24 +813,30 @@ esp_err_t wifi_init_captive() {
  * 
  * @return WiFi configuration structure for station mode.
  */
-wifi_config_t get_sta_wifi_config() {
-    wifi_config_t wifi_cfg;
-    esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);
+esp_err_t get_sta_wifi_config(wifi_config_t *cfg) {
+    if (cfg == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_wifi_get_config(WIFI_IF_STA, cfg);
 
     if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
-    strcpy((char *)wifi_cfg.sta.ssid, captive_cfg.ssid);
+    strncpy((char *)cfg->sta.ssid, captive_cfg.ssid, sizeof(cfg->sta.ssid) - 1);
+    ((char *)cfg->sta.ssid)[sizeof(cfg->sta.ssid) - 1] = '\0';
     if (captive_cfg.authmode == WIFI_AUTHMODE_OPEN) {
-        strcpy((char *)wifi_cfg.sta.password, "");
-        wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
-        ESP_LOGD(TAG, "STA config set: Authmode: 0, SSID: %s, open network (no password)", wifi_cfg.sta.ssid);
+        cfg->sta.password[0] = '\0';
+        cfg->sta.threshold.authmode = WIFI_AUTH_OPEN;
     } else {
-        strcpy((char *)wifi_cfg.sta.password, captive_cfg.password);
-        wifi_cfg.sta.threshold.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-        ESP_LOGD(TAG, "STA config set: Authmode: 1, SSID: %s", wifi_cfg.sta.ssid);
+        strncpy((char *)cfg->sta.password, captive_cfg.password, sizeof(cfg->sta.password) - 1);
+        ((char *)cfg->sta.password)[sizeof(cfg->sta.password) - 1] = '\0';
+        cfg->sta.threshold.authmode = WIFI_AUTH_WPA_WPA2_PSK;
     }
     if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
+    {
+        size_t ssid_len = strnlen((char *)cfg->sta.ssid, sizeof(cfg->sta.ssid));
+        ESP_LOGV(TAG, "STA config: SSID: %.*s, Authmode: %d", (int)ssid_len, (char *)cfg->sta.ssid, (int)(cfg->sta.threshold.authmode));
+    }
 
-    return wifi_cfg;
+    return ESP_OK;
 }
     
 /**
@@ -836,26 +849,35 @@ wifi_config_t get_sta_wifi_config() {
  * 
  * @return WiFi configuration structure for AP mode.
  */
-wifi_config_t get_ap_wifi_config() {
-    wifi_config_t wifi_cfg;
-    esp_wifi_get_config(WIFI_IF_AP, &wifi_cfg);
+esp_err_t get_ap_wifi_config(wifi_config_t *cfg) {
+    if (cfg == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_wifi_get_config(WIFI_IF_AP, cfg);
 
     if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
-    strcpy((char *)wifi_cfg.ap.ssid, captive_cfg.ap_ssid);
-    strcpy((char *)wifi_cfg.ap.password, captive_cfg.ap_password);
-    wifi_cfg.ap.ssid_len = strlen(captive_cfg.ap_ssid);
-    wifi_cfg.ap.max_connection = 4;
-
-    if (captive_cfg.ap_password[0] == 0) {
-        wifi_cfg.ap.authmode = WIFI_AUTH_OPEN;
-    } else {
-        wifi_cfg.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-    }
+    /* Copy AP SSID/password into esp-idf structure with bounds checking */
+    strncpy((char *)cfg->ap.ssid, captive_cfg.ap_ssid, sizeof(cfg->ap.ssid) - 1);
+    ((char *)cfg->ap.ssid)[sizeof(cfg->ap.ssid) - 1] = '\0';
+    strncpy((char *)cfg->ap.password, captive_cfg.ap_password, sizeof(cfg->ap.password) - 1);
+    ((char *)cfg->ap.password)[sizeof(cfg->ap.password) - 1] = '\0';
+    size_t ap_ssid_len = strnlen(captive_cfg.ap_ssid, sizeof(captive_cfg.ap_ssid));
+    cfg->ap.ssid_len = (uint8_t)MIN(ap_ssid_len, sizeof(cfg->ap.ssid));
+    cfg->ap.max_connection = 4;
     if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
 
-    ESP_LOGD(TAG, "AP config set: SSID: %s, authmode: %d", wifi_cfg.ap.ssid, wifi_cfg.ap.authmode);
+    if (captive_cfg.ap_password[0] == 0) {
+        cfg->ap.authmode = WIFI_AUTH_OPEN;
+    } else {
+        cfg->ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
+    }
 
-    return wifi_cfg;
+    {
+        size_t ap_ssid_len = strnlen((char *)cfg->ap.ssid, sizeof(cfg->ap.ssid));
+        ESP_LOGV(TAG, "AP config: SSID: %.*s, password: %.*s, Authmode: %d", (int)ap_ssid_len, (char *)cfg->ap.ssid, (int)sizeof(cfg->ap.password), cfg->ap.password, (int)(cfg->ap.authmode));
+    }
+
+    return ESP_OK;
 }
 
 /**
@@ -865,22 +887,28 @@ wifi_config_t get_ap_wifi_config() {
  * and no password, suitable for captive portal operation.
  * 
  * @param cfg Pointer to captive portal configuration (unused, for signature compatibility)
- * @return wifi_config_t WiFi configuration structure for captive AP
+ * @return esp_err_t ESP_OK on success, error code otherwise
  */
-wifi_config_t get_captive_ap_wifi_config() {
-    wifi_config_t wifi_cfg;
-    esp_wifi_get_config(WIFI_IF_AP, &wifi_cfg);
+esp_err_t get_captive_ap_wifi_config(wifi_config_t *cfg) {
+    if (cfg == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_wifi_get_config(WIFI_IF_AP, cfg);
 
-    strcpy((char *)wifi_cfg.ap.ssid, "ESP32_Captive_Portal");
-    strcpy((char *)wifi_cfg.ap.password, "");
-    wifi_cfg.ap.ssid_len = strlen("ESP32_Captive_Portal");
-    wifi_cfg.ap.max_connection = 4;
+    strncpy((char *)cfg->ap.ssid, "ESP32_Captive_Portal", sizeof(cfg->ap.ssid) - 1);
+    ((char *)cfg->ap.ssid)[sizeof(cfg->ap.ssid) - 1] = '\0';
+    cfg->ap.password[0] = '\0';
+    cfg->ap.ssid_len = (uint8_t)strlen("ESP32_Captive_Portal");
+    cfg->ap.max_connection = 4;
 
-    wifi_cfg.ap.authmode = WIFI_AUTHMODE_OPEN;
+    cfg->ap.authmode = WIFI_AUTH_OPEN;
 
-    ESP_LOGD(TAG, "AP config set: SSID: %s, password: %s, authmode: %d", wifi_cfg.ap.ssid, wifi_cfg.ap.password, wifi_cfg.ap.authmode);
+    {
+        size_t ap_ssid_len = strnlen((char *)cfg->ap.ssid, sizeof(cfg->ap.ssid));
+        ESP_LOGV(TAG, "Captive AP config: SSID: %.*s, Authmode: %d", (int)ap_ssid_len, (char *)cfg->ap.ssid, (int)(cfg->ap.authmode));
+    }
     
-    return wifi_cfg;
+    return ESP_OK;
 }
 
 esp_err_t get_mdns_config(bool *use_mDNS, char *hostname, size_t hostname_len, char *service_name, size_t service_name_len) {

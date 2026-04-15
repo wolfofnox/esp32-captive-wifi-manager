@@ -273,10 +273,12 @@ esp_err_t wifi_init() {
     ESP_ERROR_CHECK(wifi_init_captive());
 
     // Decide startup mode based on saved wifi_mode and STA config
+    wifi_config_t wifi_cfg;
+    get_sta_wifi_config(&wifi_cfg);
     if (get_wifi_mode() == WIFI_MODE_AP) {
         ESP_LOGI(TAG, "Configured for AP mode, switching to AP...");
         wifi_flags_set_bits(SWITCH_TO_AP_BIT);
-    } else if (strlen((char *)get_sta_wifi_config().sta.ssid) == 0) {
+    } else if (strlen((char *)wifi_cfg.sta.ssid) == 0) {
         ESP_LOGI(TAG, "No STA SSID configured, launching captive portal AP mode...");
         wifi_flags_set_bits(SWITCH_TO_CAPTIVE_AP_BIT);
     } else {
@@ -350,7 +352,8 @@ void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out
     }
 
     if (out_ssid) {
-        wifi_config_t sta_config = get_sta_wifi_config();
+        wifi_config_t sta_config;
+        get_sta_wifi_config(&sta_config);
         if (connected && strlen((const char*)sta_config.sta.ssid) > 0) {
             size_t len = strlen((const char*)sta_config.sta.ssid) + 1;
             *out_ssid = malloc(len);
@@ -363,7 +366,8 @@ void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out
     }
 
     if (out_ap_ssid) {
-        wifi_config_t ap_config = get_ap_wifi_config();
+        wifi_config_t ap_config;
+        get_ap_wifi_config(&ap_config);
         if (in_ap && strlen((const char*)ap_config.ap.ssid) > 0) {
             size_t len = strlen((const char*)ap_config.ap.ssid) + 1;
             *out_ap_ssid = malloc(len);
@@ -491,7 +495,8 @@ void wifi_flags_listener_task(void *pvParameter) {
 
             wifi_flags_clear_bits(RECONECT_BIT);
 
-            wifi_config_t wifi_cfg = get_sta_wifi_config();
+            wifi_config_t wifi_cfg;
+            get_sta_wifi_config(&wifi_cfg);
             esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
 
             // Set static or dynamic IP

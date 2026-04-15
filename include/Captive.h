@@ -27,7 +27,7 @@ esp_err_t register_captive_portal_handlers(void);
  * @param cfg Pointer to captive portal configuration
  * @return WiFi configuration structure for AP mode
  */
-wifi_config_t get_ap_wifi_config();
+esp_err_t get_ap_wifi_config(wifi_config_t *cfg);
 
 /**
  * @brief Create WiFi configuration for STA mode from captive portal config.
@@ -35,7 +35,7 @@ wifi_config_t get_ap_wifi_config();
  * @param cfg Pointer to captive portal configuration
  * @return WiFi configuration structure for STA mode
  */
-wifi_config_t get_sta_wifi_config();
+esp_err_t get_sta_wifi_config(wifi_config_t *cfg);
 
 /**
  * @brief Create WiFi configuration for captive portal AP mode.
@@ -45,7 +45,7 @@ wifi_config_t get_sta_wifi_config();
  * @param cfg Pointer to captive portal configuration (unused, for signature compatibility)
  * @return WiFi configuration structure for captive AP mode
  */
-wifi_config_t get_captive_ap_wifi_config();
+esp_err_t get_captive_ap_wifi_config(wifi_config_t *cfg);
 
 esp_err_t get_mdns_config(bool *use_mDNS, char *hostname, size_t hostname_len, char *service_name, size_t service_name_len);
 esp_err_t get_static_ip_config(bool *use_static_ip, esp_ip4_addr_t *static_ip);

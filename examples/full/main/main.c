@@ -54,7 +54,7 @@ esp_err_t control_post_handler(httpd_req_t *req) {
         if (httpd_query_key_value(buf, "slider", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
             sliderPostValue = (uint8_t)atoi(param);
-            ESP_LOGI(TAG, "HTTP POST: Post slider updated to %d", sliderPostValue);
+            ESP_LOGI(TAG, "HTTP POST: Post slider updated to %d", (int)sliderPostValue);
         }
         if (httpd_query_key_value(buf, "text", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
@@ -84,7 +84,7 @@ esp_err_t on_req_handler(ws_client_handle_t handle, const char *name, cJSON *par
     } else ESP_LOGV(TAG, "No params for this request");
     // Send a response back to the client
     if (strcmp(name, "reload") == 0) {
-        ESP_LOGI(TAG, "Reload request received, responding with: Cmd: %d, Sub: %d", sliderCmdValue, sliderSubValue);
+        ESP_LOGI(TAG, "Reload request received, responding with: Cmd: %d, Sub: %d", (int)sliderCmdValue, (int)sliderSubValue);
         cJSON *resp = cJSON_CreateObject();
         cJSON_AddNumberToObject(resp, "sliderSubValue", sliderSubValue);
         cJSON_AddNumberToObject(resp, "sliderCmdValue", sliderCmdValue);
@@ -107,7 +107,7 @@ esp_err_t on_cmd_handler(ws_client_handle_t handle, const char *name, cJSON *par
         cJSON *value_j = cJSON_GetObjectItemCaseSensitive(params, "value");
         if (cJSON_IsNumber(value_j)) {
             sliderCmdValue = (uint8_t)value_j->valuedouble;
-            ESP_LOGI(TAG, "Command slider updated to %d", sliderCmdValue);
+            ESP_LOGI(TAG, "Command slider updated to %d", (int)sliderCmdValue);
             ws_respond(handle, req_id, NULL); // Send empty response to acknowledge command
             /* Forward the updated value to all clients subscribed to "loopback" */
             if (g_loopback_handle && g_loopback_sub_id) {
@@ -213,7 +213,7 @@ static void on_sliderSub_snapshot(ws_client_handle_t handle, uint16_t sub_id, bo
         cJSON *val = cJSON_GetObjectItemCaseSensitive(snapshot, "value");
         if (cJSON_IsNumber(val)) {
             sliderSubValue = (uint8_t)val->valuedouble;
-            ESP_LOGI(TAG, "sliderSub snapshot value: %d", sliderSubValue);
+            ESP_LOGI(TAG, "sliderSub snapshot value: %d", (int)sliderSubValue);
         }
     }
 }
@@ -225,7 +225,7 @@ static void on_sliderSub_delta(ws_client_handle_t handle, uint16_t sub_id,
     cJSON *val = cJSON_GetObjectItemCaseSensitive(payload, "value");
     if (cJSON_IsNumber(val)) {
         sliderSubValue = (uint8_t)val->valuedouble;
-        ESP_LOGI(TAG, "sliderSub delta: value=%d", sliderSubValue);
+        ESP_LOGI(TAG, "sliderSub delta: value=%d", (int)sliderSubValue);
     }
 }
 
@@ -363,7 +363,7 @@ void app_main(void)
                           on_sub_handler, on_unsub_handler, on_close_handler);
     ESP_ERROR_CHECK(ws_start_task());
 
-    xTaskCreate(status_delta_task, "status_delta_task", 2048, NULL, 5, NULL);
+    xTaskCreate(status_delta_task, "status_delta_task", 3072, NULL, 5, NULL);
     
     bootTime = esp_timer_get_time();
 }

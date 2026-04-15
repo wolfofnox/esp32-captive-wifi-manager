@@ -31,7 +31,8 @@ esp_err_t wifi_init_ap() {
     ESP_LOGI(TAG, "Starting WiFi in access point mode...");
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "Failed to set WiFi mode");
-    wifi_config_t wifi_cfg = get_ap_wifi_config();
+    wifi_config_t wifi_cfg;
+    get_ap_wifi_config(&wifi_cfg);
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &wifi_cfg), TAG, "Failed to set WiFi config");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Failed to start WiFi");
     

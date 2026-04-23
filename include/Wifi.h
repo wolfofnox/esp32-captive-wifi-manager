@@ -9,37 +9,11 @@
 #ifndef WIFI_HANDLER_H
 #define WIFI_HANDLER_H
 
+#include "helpers.h"
 #include "esp_wifi.h"
 #include "esp_err.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
-
-// Authentication mode constants
-#define WIFI_AUTHMODE_OPEN         0           ///< Open network (no authentication)
-#define WIFI_AUTHMODE_WPA_PSK      1           ///< WPA/WPA2-Personal (password-based)
-#define WIFI_AUTHMODE_ENTERPRISE   2           ///< WPA2/WPA3-Enterprise
-#define WIFI_AUTHMODE_INVALID      ((uint8_t)-1) ///< Invalid/unknown authentication mode
-
-/**
- * @brief Configuration structure for captive portal and WiFi settings.
- * 
- * This structure holds all WiFi and network configuration settings, including
- * credentials, IP configuration, mDNS settings, and AP configuration.
- */
-typedef struct {
-    char ssid[32];              ///< SSID of the WiFi network to connect to (STA mode)
-    uint8_t authmode;           ///< Authentication mode: WIFI_AUTHMODE_OPEN, WIFI_AUTHMODE_WPA_PSK, or WIFI_AUTHMODE_ENTERPRISE
-    char username[64];          ///< Username for WPA2-Enterprise authentication (currently unused)
-    char password[64];          ///< Password for the WiFi network
-    bool use_static_ip;         ///< Use static IP if true, DHCP otherwise
-    esp_ip4_addr_t static_ip;   ///< Static IP address (only used if use_static_ip is true)
-    bool use_mDNS;              ///< Enable mDNS service discovery if true
-    char mDNS_hostname[32];     ///< mDNS hostname (e.g., "esp32" becomes "esp32.local")
-    char service_name[64];      ///< mDNS service name for service advertisement (e.g., "ESP32 Web Server")
-    char ap_ssid[32];           ///< SSID of the access point when in AP mode
-    char ap_password[64];       ///< Password for the access point (empty string for open AP)
-    wifi_mode_t wifi_mode;      ///< WiFi mode: WIFI_MODE_STA (client), WIFI_MODE_AP (access point), or WIFI_MODE_APSTA (both)
-} captive_portal_config;
 
 /**
  * @brief Initialize the WiFi manager and start network services.
@@ -95,18 +69,6 @@ esp_err_t wifi_register_http_handler(httpd_uri_t *uri);
 void wifi_set_led_rgb(uint32_t irgb, uint8_t brightness);
 
 /**
- * @brief Decode a URL-encoded string in place.
- * 
- * Converts URL-encoded characters (like %20 for space, + for space)
- * to their normal ASCII representation. The string is modified in place.
- * 
- * @param str Pointer to null-terminated string to decode (modified in place)
- * 
- * @note Useful for processing form data from HTTP POST requests.
- */
-void url_decode(char *str);
-
-/**
  * @brief Get the current WiFi connection status and configuration.
  * 
  * Retrieves the current WiFi connection status, including whether connected
@@ -118,6 +80,20 @@ void url_decode(char *str);
  * @param out_ssid Pointer to char* that will be set to a newly allocated string containing the connected SSID (caller must free), or NULL if not connected
  * @param out_ap_ssid Pointer to char* that will be set to a newly allocated string containing the AP SSID if in AP mode (caller must free), or NULL if not in AP mode
  */
-void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out_ip_str, char **out_ssid, char **out_ap_ssid); 
+void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out_ip_str, char **out_ssid, char **out_ap_ssid);
+
+/**
+ * @brief Get the AP network interface handle.
+ * 
+ * @return esp_netif_t* AP netif handle, or NULL if not yet initialized
+ */
+esp_netif_t *wifi_get_ap_netif(void);
+
+/**
+ * @brief Get the STA network interface handle.
+ * 
+ * @return esp_netif_t* STA netif handle, or NULL if not yet initialized
+ */
+esp_netif_t *wifi_get_sta_netif(void);
 
 #endif

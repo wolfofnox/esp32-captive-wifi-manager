@@ -54,7 +54,7 @@ esp_err_t control_post_handler(httpd_req_t *req) {
         if (httpd_query_key_value(buf, "slider", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
             sliderPostValue = (uint8_t)atoi(param);
-            ESP_LOGI(TAG, "HTTP POST: Post slider updated to %d", sliderPostValue);
+            ESP_LOGI(TAG, "HTTP POST: Post slider updated to %d", (int)sliderPostValue);
         }
         if (httpd_query_key_value(buf, "text", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
@@ -84,7 +84,7 @@ esp_err_t on_req_handler(ws_client_handle_t handle, const char *name, cJSON *par
     } else ESP_LOGV(TAG, "No params for this request");
     // Send a response back to the client
     if (strcmp(name, "reload") == 0) {
-        ESP_LOGI(TAG, "Reload request received, responding with: Cmd: %d, Sub: %d", sliderCmdValue, sliderSubValue);
+        ESP_LOGI(TAG, "Reload request received, responding with: Cmd: %d, Sub: %d", (int)sliderCmdValue, (int)sliderSubValue);
         cJSON *resp = cJSON_CreateObject();
         cJSON_AddNumberToObject(resp, "sliderSubValue", sliderSubValue);
         cJSON_AddNumberToObject(resp, "sliderCmdValue", sliderCmdValue);
@@ -107,7 +107,7 @@ esp_err_t on_cmd_handler(ws_client_handle_t handle, const char *name, cJSON *par
         cJSON *value_j = cJSON_GetObjectItemCaseSensitive(params, "value");
         if (cJSON_IsNumber(value_j)) {
             sliderCmdValue = (uint8_t)value_j->valuedouble;
-            ESP_LOGI(TAG, "Command slider updated to %d", sliderCmdValue);
+            ESP_LOGI(TAG, "Command slider updated to %d", (int)sliderCmdValue);
             ws_respond(handle, req_id, NULL); // Send empty response to acknowledge command
             /* Forward the updated value to all clients subscribed to "loopback" */
             if (g_loopback_handle && g_loopback_sub_id) {
@@ -213,7 +213,7 @@ static void on_sliderSub_snapshot(ws_client_handle_t handle, uint16_t sub_id, bo
         cJSON *val = cJSON_GetObjectItemCaseSensitive(snapshot, "value");
         if (cJSON_IsNumber(val)) {
             sliderSubValue = (uint8_t)val->valuedouble;
-            ESP_LOGI(TAG, "sliderSub snapshot value: %d", sliderSubValue);
+            ESP_LOGI(TAG, "sliderSub snapshot value: %d", (int)sliderSubValue);
         }
     }
 }
@@ -225,7 +225,7 @@ static void on_sliderSub_delta(ws_client_handle_t handle, uint16_t sub_id,
     cJSON *val = cJSON_GetObjectItemCaseSensitive(payload, "value");
     if (cJSON_IsNumber(val)) {
         sliderSubValue = (uint8_t)val->valuedouble;
-        ESP_LOGI(TAG, "sliderSub delta: value=%d", sliderSubValue);
+        ESP_LOGI(TAG, "sliderSub delta: value=%d", (int)sliderSubValue);
     }
 }
 
@@ -290,33 +290,35 @@ static void status_delta_task(void *arg) {
                 last_total_heap_kb = total_heap_kb;
             }
             bool connected, in_ap_mode;
-            char *ip_str = NULL;
-            char *ssid = NULL;
-            char *ap_ssid = NULL;
-            wifi_get_status(&connected, &in_ap_mode, &ip_str, &ssid, &ap_ssid);
+            wifi_get_status(&connected, &in_ap_mode, NULL, NULL, NULL);
             if (connected != last_connected) {
                 if (!delta) {
                     delta = cJSON_CreateObject();
                 }
                 if (!delta) continue;
+                char *ip_str = NULL;
+                char *ssid = NULL;
+                wifi_get_status(NULL, NULL, &ip_str, &ssid, NULL);
                 cJSON_AddBoolToObject(delta, "connected", connected);
                 cJSON_AddStringToObject(delta, "ip", connected ? (ip_str ? ip_str : "") : "");
                 cJSON_AddStringToObject(delta, "ssid", connected ? (ssid ? ssid : "") : "");
                 last_connected = connected;
+                if (ssid) free(ssid);
+                if (ip_str) free(ip_str);
             }
             if (in_ap_mode != last_in_ap_mode) {
                 if (!delta) {
                     delta = cJSON_CreateObject();
                 }
                 if (!delta) continue;
+                char *ap_ssid = NULL;
+                wifi_get_status(NULL, NULL, NULL, NULL, &ap_ssid);
                 cJSON_AddBoolToObject(delta, "in_ap_mode", in_ap_mode);
                 cJSON_AddStringToObject(delta, "ap_ssid", in_ap_mode ? (ap_ssid ? ap_ssid : "") : "");
                 last_in_ap_mode = in_ap_mode;
+                if (ap_ssid) free(ap_ssid);
             }
             if (delta) ws_send_sub_delta(g_status_handle, g_status_sub_id, delta);
-            if (ip_str) free(ip_str);
-            if (ssid) free(ssid);
-            if (ap_ssid) free(ap_ssid);
         }
     }       
 }
@@ -361,7 +363,7 @@ void app_main(void)
                           on_sub_handler, on_unsub_handler, on_close_handler);
     ESP_ERROR_CHECK(ws_start_task());
 
-    xTaskCreate(status_delta_task, "status_delta_task", 2048, NULL, 5, NULL);
+    xTaskCreate(status_delta_task, "status_delta_task", 3072, NULL, 5, NULL);
     
     bootTime = esp_timer_get_time();
 }

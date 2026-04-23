@@ -382,10 +382,11 @@ esp_err_t captive_json_handler(httpd_req_t *req) {
 esp_err_t captive_post_handler(httpd_req_t *req) {
     char buf[256];
     int len = httpd_req_recv(req, buf, MIN(req->content_len, sizeof(buf) - 1));
-    bool need_reconnect = false;
-    bool need_mdns_update = false;
+    bool do_reconnect = false;
+    bool do_mdns = false;
+    bool do_switch_sta = false;
+    bool do_switch_ap = false;
     bool ssid_changed = false;
-    bool mode_changed = false;
     wifi_mode_t mode;
     ESP_ERROR_CHECK(esp_wifi_get_mode(&mode));
     ESP_LOGI(TAG, "Received POST request to update WiFi settings");
@@ -401,12 +402,15 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         // Parse wifi_mode first
         if (httpd_query_key_value(buf, "wifi_mode", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
-            ESP_LOGD(TAG, "Parsed WiFi Mode: %s", param);
+            ESP_LOGV(TAG, "Parsed WiFi Mode: %s", param);
             int mode_val = atoi(param);
-            wifi_mode_t new_mode = (mode_val == WIFI_MODE_AP) ? WIFI_MODE_AP : WIFI_MODE_STA;
-            if (captive_cfg.wifi_mode != new_mode) {
-                mode_changed = true;
-                captive_cfg.wifi_mode = new_mode;
+            captive_cfg.wifi_mode = (mode_val == WIFI_MODE_AP) ? WIFI_MODE_AP : WIFI_MODE_STA;
+            if (captive_cfg.wifi_mode == WIFI_MODE_AP && mode != WIFI_MODE_AP) {
+                do_switch_ap = true;
+                ESP_LOGD(TAG, "WiFi mode set to AP, will switch to AP mode");
+            } else if (captive_cfg.wifi_mode == WIFI_MODE_STA && mode != WIFI_MODE_STA) {
+                do_switch_sta = true;
+                ESP_LOGD(TAG, "WiFi mode set to STA, will switch to STA mode");
             }
         }
         
@@ -418,31 +422,33 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
                 strncpy(captive_cfg.ap_ssid, param, sizeof(captive_cfg.ap_ssid) - 1);
                 captive_cfg.ap_ssid[sizeof(captive_cfg.ap_ssid) - 1] = '\0';
                 if (captive_cfg.wifi_mode == WIFI_MODE_AP) {
-                    mode_changed = true;
+                    do_switch_ap = true;
+                    ESP_LOGD(TAG, "AP SSID changed, restarting AP mode to apply...");
                 }
             }
         }
         
         if (httpd_query_key_value(buf, "ap_password", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
-            ESP_LOGD(TAG, "Parsed AP Password: %s", param);
+            ESP_LOGV(TAG, "Parsed AP Password: %s", param);
             // Only update if not empty (empty = unchanged)
             if (strlen(param) > 0 && strcmp(captive_cfg.ap_password, param) != 0) {
                 strncpy(captive_cfg.ap_password, param, sizeof(captive_cfg.ap_password) - 1);
                 captive_cfg.ap_password[sizeof(captive_cfg.ap_password) - 1] = '\0';
                 if (captive_cfg.wifi_mode == WIFI_MODE_AP) {
-                    mode_changed = true;
+                    do_switch_ap = true;
+                    ESP_LOGD(TAG, "AP password changed, restarting AP mode to apply...");
                 }
             }
         }
         
         if (httpd_query_key_value(buf, "ssid", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
-            ESP_LOGD(TAG, "Parsed SSID: %s", param);
+            ESP_LOGV(TAG, "Parsed SSID: %s", param);
             if (strcmp((char*)&captive_cfg.ssid, param) != 0) {
-                ssid_changed = true;  // Mark SSID as changed
+                ssid_changed = true; // mark ssid as changed for empty password handling
                 if (mode == WIFI_MODE_STA) {
-                    need_reconnect = true;
+                    do_reconnect = true;
                     ESP_LOGD(TAG, "SSID changed, reconnecting...");
                 }
                 strncpy(captive_cfg.ssid, param, sizeof(captive_cfg.ssid) - 1);
@@ -455,7 +461,7 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
                 captive_cfg.authmode = WIFI_AUTHMODE_INVALID;
             } else {
                 int new_authmode = atoi(param);
-                ESP_LOGD(TAG, "Parsed Authmode: %d", new_authmode);
+                ESP_LOGV(TAG, "Parsed Authmode: %d", new_authmode);
                 if (new_authmode == WIFI_AUTHMODE_ENTERPRISE) {
                     ESP_LOGW(TAG, "Enterprise networks (authmode 2) rejected");
                     if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
@@ -472,7 +478,7 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
                 }
                 if (captive_cfg.authmode != new_authmode) {
                     if (mode == WIFI_MODE_STA) {
-                        need_reconnect = true;
+                        do_reconnect = true;
                         ESP_LOGD(TAG, "Authmode changed, reconnecting...");
                     }
                 }
@@ -481,7 +487,6 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         }
         if (httpd_query_key_value(buf, "password", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
-            
             // Safety: If SSID changed and password is empty, reject the request
             if (ssid_changed && strlen(param) == 0 && captive_cfg.authmode == WIFI_AUTHMODE_WPA_PSK) {
                 ESP_LOGW(TAG, "SSID changed but no password provided for WPA network");
@@ -493,12 +498,12 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
             
             if ((captive_cfg.authmode != WIFI_AUTHMODE_OPEN && strlen(param) != 0 && strcmp((char*)&captive_cfg.password, param) != 0) || captive_cfg.authmode == WIFI_AUTHMODE_INVALID) {
                 if (mode == WIFI_MODE_STA) {
-                    need_reconnect = true;
+                    do_reconnect = true;
                     ESP_LOGD(TAG, "Password changed, reconnecting...");
                 }
                 strncpy(captive_cfg.password, param, sizeof(captive_cfg.password) - 1);
                 captive_cfg.password[sizeof(captive_cfg.password) - 1] = '\0';
-            } else if (captive_cfg.authmode == WIFI_AUTHMODE_OPEN && captive_cfg.authmode != WIFI_AUTHMODE_INVALID) {
+            } else if (captive_cfg.authmode == WIFI_AUTHMODE_OPEN) {
                 captive_cfg.password[0] = '\0';
             }
         }
@@ -506,23 +511,23 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
             if (captive_cfg.password[0] != 0) {
                 captive_cfg.authmode = WIFI_AUTHMODE_WPA_PSK; // WPA/WPA2-PSK
                 if (mode == WIFI_MODE_STA) {
-                    need_reconnect = true;
+                    do_reconnect = true;
                     ESP_LOGD(TAG, "Invalid authmode corrected to WPA/WPA2-Personal, password is not empty, reconnecting...");
                 }
             } else {
                 captive_cfg.authmode = WIFI_AUTHMODE_OPEN; // Open
                 if (mode == WIFI_MODE_STA) {
-                    need_reconnect = true;
+                    do_reconnect = true;
                     ESP_LOGD(TAG, "Invalid authmode corrected to Open, password is empty, reconnecting...");
                 }
             }
         }
         if (httpd_query_key_value(buf, "use_static_ip", param, sizeof(param)) == ESP_OK) {
             bool new_use_static_ip = strcmp(param, "true") == 0;
-            ESP_LOGD(TAG, "Parsed Use Static IP: %s", param);
+            ESP_LOGV(TAG, "Parsed Use Static IP: %s", param);
             if (captive_cfg.use_static_ip != new_use_static_ip) {
                 if (mode == WIFI_MODE_STA) {
-                    need_reconnect = true;
+                    do_reconnect = true;
                     ESP_LOGD(TAG, "Static IP usage changed, reconnecting...");
                 }
             }
@@ -530,7 +535,7 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         } else {
             if (captive_cfg.use_static_ip) {
                 if (mode == WIFI_MODE_STA) {
-                    need_reconnect = true;
+                    do_reconnect = true;
                     ESP_LOGD(TAG, "Static IP usage disabled, reconnecting...");
                 }
             }
@@ -538,21 +543,21 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         }
         if (httpd_query_key_value(buf, "static_ip", param, sizeof(param)) == ESP_OK) {
             uint32_t new_ip = inet_addr(param);
-            ESP_LOGD(TAG, "Parsed Static IP: %s", param);
+            ESP_LOGV(TAG, "Parsed Static IP: %s", param);
             if (captive_cfg.static_ip.addr != new_ip && captive_cfg.use_static_ip) {
                 if (mode == WIFI_MODE_STA) {
-                    need_reconnect = true;
-                    ESP_LOGD(TAG, "Static IP changed, reconnecting...");
+                    do_reconnect = true;
+                    ESP_LOGD(TAG, "Static IP changed to %s, reconnecting...", param);
                 }
             }
             captive_cfg.static_ip.addr = new_ip;
         }
         if (httpd_query_key_value(buf, "use_mDNS", param, sizeof(param)) == ESP_OK) {
             bool new_use_mdns = strcmp(param, "true") == 0;
-            ESP_LOGD(TAG, "Parsed Use mDNS: %s", param);
+            ESP_LOGV(TAG, "Parsed Use mDNS: %s", param);
             if (captive_cfg.use_mDNS != new_use_mdns) {
                 if (mode == WIFI_MODE_STA) {
-                    need_mdns_update = true;
+                    do_mdns = true;
                     ESP_LOGD(TAG, "mDNS usage changed, updating...");
                 }
             }
@@ -560,7 +565,7 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         } else {
             if (captive_cfg.use_mDNS) {
                 if (mode == WIFI_MODE_STA) {
-                    need_mdns_update = true;
+                    do_mdns = true;
                     ESP_LOGD(TAG, "mDNS usage disabled, updating...");
                 }
             }
@@ -568,12 +573,12 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         }
         if (httpd_query_key_value(buf, "mDNS_hostname", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
-            ESP_LOGD(TAG, "Parsed mDNS Hostname: %s", param);
+            ESP_LOGV(TAG, "Parsed mDNS Hostname: %s", param);
             if ((strcmp(captive_cfg.mDNS_hostname, param) != 0)) {
                 if (captive_cfg.use_mDNS) {
                     if (mode == WIFI_MODE_STA) {
-                        need_mdns_update = true;
-                        ESP_LOGD(TAG, "mDNS hostname changed, updating...");
+                        do_mdns = true;
+                        ESP_LOGD(TAG, "mDNS hostname changed to %s, updating...", param);
                     }
                 }
                 strncpy(captive_cfg.mDNS_hostname, param, sizeof(captive_cfg.mDNS_hostname) - 1);
@@ -582,12 +587,12 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         }
         if (httpd_query_key_value(buf, "service_name", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
-            ESP_LOGD(TAG, "Parsed Service Name: %s", param);
+            ESP_LOGV(TAG, "Parsed Service Name: %s", param);
             if ((strcmp(captive_cfg.service_name, param) != 0)) {
                 if (captive_cfg.use_mDNS) {
                     if (mode == WIFI_MODE_STA) {
-                        need_mdns_update = true;
-                        ESP_LOGD(TAG, "mDNS service name changed, updating...");
+                        do_mdns = true;
+                        ESP_LOGD(TAG, "mDNS service name changed to %s, updating...", param);
                     }
                 }
                 strncpy(captive_cfg.service_name, param, sizeof(captive_cfg.service_name) - 1);
@@ -616,18 +621,6 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
     // Save settings to NVS
     set_nvs_wifi_settings(&captive_cfg);
 
-    /* Capture the bits to signal, then release the mutex before signalling
-     * so the listener task can immediately acquire it if needed. */
-    bool do_switch_sta = false, do_switch_ap = false;
-    bool do_reconnect = false, do_mdns = false;
-    if (mode_changed) {
-        ESP_LOGD(TAG, "WiFi mode changed to: %d", captive_cfg.wifi_mode);
-        do_switch_sta = (captive_cfg.wifi_mode == WIFI_MODE_STA);
-        do_switch_ap  = (captive_cfg.wifi_mode == WIFI_MODE_AP);
-    } else if (mode == WIFI_MODE_STA) {
-        do_reconnect = need_reconnect;
-        do_mdns = need_mdns_update;
-    }
     if (s_cfg_mutex) xSemaphoreGive(s_cfg_mutex);
 
     // Determine action based on mode

@@ -12,6 +12,8 @@
  * @return ESP_OK on success
  * @return Error code if SPI initialization or mounting fails
  */
+#if CONFIG_WIFI_ENABLE_SD
+
 esp_err_t mount_sd_card();
 
 /**
@@ -29,3 +31,12 @@ bool is_sd_card_present();
  */
 
 const char* get_sd_card_mount_point();
+
+#else
+
+/* Stubs when SD support is disabled to avoid link errors. */
+static inline esp_err_t mount_sd_card(void) { return ESP_ERR_NOT_SUPPORTED; }
+static inline bool is_sd_card_present(void) { return false; }
+static inline const char* get_sd_card_mount_point(void) { return ""; }
+
+#endif

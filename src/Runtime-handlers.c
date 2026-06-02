@@ -105,15 +105,17 @@ esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     wifi_config_t wifi_cfg;
     char sta_ssid[32];
     if (connected) {
-        get_sta_wifi_config(&wifi_cfg);
-        strncpy(sta_ssid, (const char*)wifi_cfg.sta.ssid, sizeof(sta_ssid) - 1);
-        sta_ssid[sizeof(sta_ssid) - 1] = '\0';
+        if (get_sta_wifi_config(&wifi_cfg) == ESP_OK) {
+            strncpy(sta_ssid, (const char*)wifi_cfg.sta.ssid, sizeof(sta_ssid) - 1);
+            sta_ssid[sizeof(sta_ssid) - 1] = '\0';
+        } else {sta_ssid[0] = '\0';}
     } else {sta_ssid[0] = '\0';}
     char ap_ssid[32];
     if (bits & AP_MODE_BIT) {
-        get_ap_wifi_config(&wifi_cfg);
-        strncpy(ap_ssid, (const char*)wifi_cfg.ap.ssid, sizeof(ap_ssid) - 1);
-        ap_ssid[sizeof(ap_ssid) - 1] = '\0';
+        if (get_ap_wifi_config(&wifi_cfg) == ESP_OK) {
+            strncpy(ap_ssid, (const char*)wifi_cfg.ap.ssid, sizeof(ap_ssid) - 1);
+            ap_ssid[sizeof(ap_ssid) - 1] = '\0';
+        } else {ap_ssid[0] = '\0';}
     } else {ap_ssid[0] = '\0';}
 
     snprintf(json, sizeof(json), "{\"connected\": %s, \"ip\": \"%s\", \"ssid\": \"%s\", \"in_ap_mode\": %s, \"ap_ssid\": \"%s\"}",
@@ -190,7 +192,12 @@ esp_err_t restart_handler(httpd_req_t *req) {
 esp_err_t no_sd_card_handler(httpd_req_t *req) {
     httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_set_type(req, "text/html");
+    #if CONFIG_WIFI_ENABLE_SD
     httpd_resp_send(req, "<h2>SD card not detected</h2>\n<p>Please insert an SD card and <a href=\"/restart\">restart</a> the device</p>", HTTPD_RESP_USE_STRLEN);
+    #else
+    httpd_resp_send(req, "<h2>SD card support not enabled</h2>\n<p>This firmware build does not include SD card support. You may register custom handlers or enable SD card support in menuconfig and flash updated firmware.</p>", HTTPD_RESP_USE_STRLEN);
+    #endif
+
     return ESP_OK;
 }
 
@@ -572,7 +579,11 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
             bool use_mDNS;
             char mDNS_hostname[32];
             char service_name[32];
-            get_mdns_config(&use_mDNS, mDNS_hostname, sizeof(mDNS_hostname), service_name, sizeof(service_name));            
+            if (get_mdns_config(&use_mDNS, mDNS_hostname, sizeof(mDNS_hostname), service_name, sizeof(service_name)) != ESP_OK) {
+                use_mDNS = false;
+                mDNS_hostname[0] = '\0';
+                service_name[0] = '\0';
+            }
             if (use_mDNS) {
                 snprintf(location, sizeof(location), "http://%s.local/", mDNS_hostname);
             } else {
@@ -669,8 +680,10 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
     
     ESP_RETURN_ON_ERROR(server_mgr_register_err_handler(HTTPD_404_NOT_FOUND, not_found_handler), TAG, "Failed to register 404 handler");
 
+    #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
     // Register captive portal HTTP handlers (on /captive_portal for STA mode)
     ESP_RETURN_ON_ERROR(register_captive_portal_handlers(), TAG, "Failed to register captive portal handlers");
+    #endif
 
     httpd_uri_t index_html_uri = {
         .uri = "/index.html",

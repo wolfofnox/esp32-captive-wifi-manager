@@ -26,15 +26,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-/** @brief Maximum number of client IPs to track for captive portal redirect */
-#define MAX_REDIRECTED_IPS 10
-
-/** @brief Array tracking IPs that have already been redirected to prevent redirect loops */
-static uint32_t redirected_ips[MAX_REDIRECTED_IPS];
-
-/** @brief Number of IPs currently tracked in redirected_ips array */
-static int redirected_count = 0;
-
 static const char *TAG = "Wifi: Runtime-handlers";
 
 /**
@@ -128,32 +119,6 @@ esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     httpd_resp_send(req, json, strlen(json));
     ESP_LOGV(TAG, "WiFi status JSON sent: %s", json);
     return ESP_OK;
-}
-
-/**
- * @brief Check if a client IP has already been redirected to the captive portal.
- * 
- * @param ip Client IP address to check
- * @return true if IP has been redirected previously, false otherwise
- */
-static bool is_ip_redirected(uint32_t ip) {
-    for (int i = 0; i < redirected_count; i++) {
-        if (redirected_ips[i] == ip) return true;
-    }
-    return false;
-}
-
-/**
- * @brief Mark a client IP as having been redirected to the captive portal.
- * 
- * Adds the IP to the redirected IPs list to prevent redirect loops.
- * 
- * @param ip Client IP address to mark
- */
-static void mark_ip_redirected(uint32_t ip) {
-    if (redirected_count < MAX_REDIRECTED_IPS) {
-        redirected_ips[redirected_count++] = ip;
-    }
 }
 
 // Restart from a background task so the HTTP server can finish sending
@@ -498,7 +463,6 @@ esp_err_t send_sd_file(httpd_req_t *req, const char *filepath)
  * @brief HTTP handler for serving files from the SD card.
  * 
  * This handler serves files from the SD card mounted at /sdcard. It performs:
- * - Captive portal detection URL handling (redirects first request, returns 204 for subsequent)
  * - Directory index handling (serves index.html for directories)
  * - File extension-based content type detection
  * - Automatic .html extension appending for extensionless paths
@@ -511,103 +475,7 @@ esp_err_t send_sd_file(httpd_req_t *req, const char *filepath)
  */
 esp_err_t sd_file_handler(httpd_req_t *req) {
     ESP_LOGV(TAG, "SD file handler invoked for URI: %s", req->uri);
-    #if FALSE // This seemed to have no effect, temporarily removed, to be looked into later
-    // Handle captive portal detection URLs from various operating systems
-    // Android: /generate_204, /gen_204
-    // iOS: /hotspot-detect.html
-    // Windows: /ncsi.txt, /connecttest.txt
-    // Generic: /success.txt, /redirect, /204
-    if (!strcmp(req->uri, "/generate_204") ||
-        !strcmp(req->uri, "/gen_204") ||
-        !strcmp(req->uri, "/ncsi.txt") ||
-        !strcmp(req->uri, "/connecttest.txt") ||
-        !strcmp(req->uri, "/hotspot-detect.html") ||
-        !strcmp(req->uri, "/success.txt") ||
-        !strcmp(req->uri, "/redirect") ||
-        !strcmp(req->uri, "/204") ||
-        !strcmp(req->uri, "/ipv6check")) {
-        
-        ESP_LOGV(TAG, "Captive portal detection request: %s", req->uri);
-        
-        // Extract client IP address from socket for redirect tracking
-        uint32_t client_ip = 0;
-        int sockfd = httpd_req_to_sockfd(req);
-        
-        if (sockfd >= 0) {
-            struct sockaddr_storage addr;
-            socklen_t addr_len = sizeof(addr);
-            
-            if (getpeername(sockfd, (struct sockaddr *)&addr, &addr_len) == 0) {
-                if (addr.ss_family == AF_INET) {
-                    // IPv4
-                    struct sockaddr_in *addr_in = (struct sockaddr_in *)&addr;
-                    client_ip = addr_in->sin_addr.s_addr;
-                    char ip_str[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &(addr_in->sin_addr), ip_str, INET_ADDRSTRLEN);
-                    ESP_LOGV(TAG, "Client IPv4 obtained: %s (0x%08X)", ip_str, (unsigned int)client_ip);
-                } else if (addr.ss_family == AF_INET6) {
-                    // IPv6 - use hash of last 4 bytes as identifier
-                    struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)&addr;
-                    memcpy(&client_ip, &addr_in6->sin6_addr.s6_addr[12], 4);
-                    char ip_str[INET6_ADDRSTRLEN];
-                    inet_ntop(AF_INET6, &(addr_in6->sin6_addr), ip_str, INET6_ADDRSTRLEN);
-                    ESP_LOGV(TAG, "Client IPv6 obtained: %s (hash: 0x%08X)", ip_str, (unsigned int)client_ip);
-                } else {
-                    ESP_LOGW(TAG, "Unknown address family: %d", addr.ss_family);
-                }
-            } else {
-                ESP_LOGW(TAG, "getpeername failed: errno=%d (%s)", errno, strerror(errno));
-            }
-        } else {
-            ESP_LOGW(TAG, "Invalid socket fd: %d", sockfd);
-        }
-        
-        // Determine response based on request type and redirect tracking
-        // For Microsoft NCSI (Windows) - return the exact expected content
-        if (!strcmp(req->uri, "/ncsi.txt") || !strcmp(req->uri, "/connecttest.txt")) {
-            httpd_resp_set_type(req, "text/plain");
-            httpd_resp_send(req, "Microsoft NCSI", HTTPD_RESP_USE_STRLEN);
-            return ESP_OK;
-        }
-        
-        // First request from this IP: redirect to portal to open popup/browser
-        // Subsequent requests from same IP: return 204 to indicate internet connectivity
-        if ((client_ip != 0 && !is_ip_redirected(client_ip))||!strcmp(req->uri, "/redirect")) {
-            mark_ip_redirected(client_ip);
-            
-            char location[64];
-            bool use_mDNS;
-            char mDNS_hostname[32];
-            char service_name[32];
-            if (get_mdns_config(&use_mDNS, mDNS_hostname, sizeof(mDNS_hostname), service_name, sizeof(service_name)) != ESP_OK) {
-                use_mDNS = false;
-                mDNS_hostname[0] = '\0';
-                service_name[0] = '\0';
-            }
-            if (use_mDNS) {
-                snprintf(location, sizeof(location), "http://%s.local/", mDNS_hostname);
-            } else {
-                esp_netif_ip_info_t ip_info;
-                esp_netif_get_ip_info(wifi_get_ap_netif(), &ip_info);
-                char ip_addr[16];
-                inet_ntoa_r(ip_info.ip.addr, ip_addr, 16);
-                snprintf(location, sizeof(location), "http://%s/", ip_addr);
-            }
-            
-            httpd_resp_set_status(req, "302 Found");
-            httpd_resp_set_hdr(req, "Location", location);
-            httpd_resp_send(req, NULL, 0);
-            ESP_LOGI(TAG, "First captive detection, redirecting to %s", location);
-            return ESP_OK;
-        }
-        
-        // Subsequent requests: return 204
-        httpd_resp_set_status(req, "204 No Content");
-        httpd_resp_send(req, NULL, 0);
-        return ESP_OK;
-    }
-    #endif
-
+   
     #if CONFIG_WIFI_SD_FILE_SERVING_MODE_SPA
     bool is_navigation_request = true;
     const char *last_slash = strrchr(req->uri, '/');

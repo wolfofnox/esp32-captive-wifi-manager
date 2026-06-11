@@ -56,12 +56,12 @@ esp_err_t wifi_init_ap() {
     if (use_static_ip) {
         uint32_t new_ip = ntohl(ip_addr.addr);
         ip_info.ip.addr = ip_addr.addr;
-        ip_info.gw.addr = htonl((new_ip & 0xFFFFFF00)|0x01);    // x.x.x.1
+        ip_info.gw.addr = 0; // Not used in AP mode, phome may try to use fallback mobile data if gateway is set, so leave as 0
         ip_info.netmask.addr = htonl((255 << 24) | (255 << 16) | (255 << 8) | 0);   // 255.255.255.0
     } else {
         // Default AP IP: 192.168.4.1
         ip_info.ip.addr = htonl((192 << 24) | (168 << 16) | (4 << 8) | 1);
-        ip_info.gw.addr = ip_info.ip.addr;
+        ip_info.gw.addr = 0; // Not used in AP mode, phome may try to use fallback mobile data if gateway is set, so leave as 0
         ip_info.netmask.addr = htonl((255 << 24) | (255 << 16) | (255 << 8) | 0);
     }
     

@@ -5,6 +5,7 @@
 
 #include "Flags.h"
 #include "Server-mgr.h"
+#include "nvs-mgr.h"
 
 #include "helpers.h"
 
@@ -14,44 +15,12 @@
 
 #include "esp_check.h"
 #include "esp_wifi.h"
-#include "nvs_flash.h"
-#include "nvs.h"
 #include "dns_server.h"   // for captive portal DNS hijack
 #include "lwip/inet.h"
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <string.h>
-
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
-
-typedef enum {
-    WIFI_AUTHMODE_OPEN = 0,
-    WIFI_AUTHMODE_WPA_PSK = 1,
-    WIFI_AUTHMODE_ENTERPRISE = 2,
-    WIFI_AUTHMODE_INVALID = 255
-} wifi_captive_auth_mode_t;
-
-/**
- * @brief Configuration structure for captive portal and WiFi settings.
- * 
- * This structure holds all WiFi and network configuration settings, including
- * credentials, IP configuration, mDNS settings, and AP configuration.
- */
-typedef struct {
-    char ssid[33];              ///< SSID of the WiFi network to connect to (STA mode) — match esp-idf AP record size (33)
-    wifi_captive_auth_mode_t authmode;           ///< Authentication mode: WIFI_AUTHMODE_OPEN, WIFI_AUTHMODE_WPA_PSK, or WIFI_AUTHMODE_ENTERPRISE
-    char username[64];          ///< Username for WPA2-Enterprise authentication (currently unused)
-    char password[64];          ///< Password for the WiFi network
-    bool use_static_ip;         ///< Use static IP if true, DHCP otherwise
-    esp_ip4_addr_t static_ip;   ///< Static IP address (only used if use_static_ip is true)
-    bool use_mDNS;              ///< Enable mDNS service discovery if true
-    char mDNS_hostname[32];     ///< mDNS hostname (e.g., "esp32" becomes "esp32.local")
-    char service_name[64];      ///< mDNS service name for service advertisement (e.g., "ESP32 Web Server")
-    char ap_ssid[33];           ///< SSID of the access point when in AP mode — match esp-idf AP record size (33)
-    char ap_password[64];       ///< Password for the access point (empty string for open AP)
-    wifi_mode_t wifi_mode;      ///< WiFi mode: WIFI_MODE_STA (client), WIFI_MODE_AP (access point)
-} captive_portal_config;
 
 /** @brief Current captive portal and WiFi configuration */
 static captive_portal_config captive_cfg = { 0 };
@@ -69,143 +38,7 @@ extern const char captive_html_start[] asm("_binary_captive_html_start");
 /** @brief End address of embedded captive portal HTML page */
 extern const char captive_html_end[] asm("_binary_captive_html_end");
 
-/** @brief NVS namespace used for storing WiFi credentials and settings */
-static const char *NVS_NAMESPACE_WIFI = "wifi_settings";
-
 static const char *TAG = "Wifi: Captive";
-
-/**
- * @brief Fill the captive portal configuration structure with empty values.
- * 
- * This function initializes the captive portal configuration structure
- * with empty data to ensure it is ready for use.
- * 
- * @param cfg Pointer to the captive portal configuration structure to fill.
- */
-static inline void fill_captive_portal_config_struct(captive_portal_config *cfg) {
-    cfg->ssid[0] = '\0';
-    cfg->password[0] = '\0';
-    cfg->use_static_ip = false;
-    cfg->static_ip.addr = 0;
-    cfg->use_mDNS = false;
-    cfg->mDNS_hostname[0] = '\0';
-    cfg->service_name[0] = '\0';
-    cfg->ap_ssid[0] = '\0';
-    cfg->ap_password[0] = '\0';
-    cfg->authmode = WIFI_AUTHMODE_OPEN;
-    cfg->wifi_mode = WIFI_MODE_STA;  // Default to station mode
-}
-
-/**
- * @brief Read WiFi configuration from NVS flash storage.
- * 
- * Opens the WiFi settings namespace and reads all saved configuration values
- * into the provided structure. If values don't exist, they remain unchanged.
- * 
- * @param cfg Pointer to captive_portal_config structure to populate
- */
-void get_nvs_wifi_settings(captive_portal_config *cfg) {
-    ESP_LOGD(TAG, "Reading NVS WiFi settings...");
-    if (cfg == NULL) {
-        ESP_LOGE(TAG, "Invalid configuration pointer (== NULL)");
-    }
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE_WIFI, NVS_READWRITE, &nvs_handle);
-    if (err == ESP_OK) {
-        size_t len = sizeof(cfg->ssid);
-        nvs_get_str(nvs_handle, "ssid", cfg->ssid, &len);
-        len = sizeof(cfg->password);
-        nvs_get_str(nvs_handle, "password", cfg->password, &len);
-        nvs_get_u8(nvs_handle, "authmode", (uint8_t*)&cfg->authmode);
-        len = sizeof(cfg->ap_ssid);
-        nvs_get_str(nvs_handle, "ap_ssid", cfg->ap_ssid, &len);
-        len = sizeof(cfg->ap_password);
-        nvs_get_str(nvs_handle, "ap_password", cfg->ap_password, &len);
-        nvs_get_u8(nvs_handle, "use_static_ip", (uint8_t*)&cfg->use_static_ip);
-        nvs_get_u8(nvs_handle, "use_mDNS", (uint8_t*)&cfg->use_mDNS);
-        nvs_get_u32(nvs_handle, "static_ip", &cfg->static_ip.addr);
-        len = sizeof(cfg->mDNS_hostname);
-        nvs_get_str(nvs_handle, "mDNS_hostname", cfg->mDNS_hostname, &len);
-        len = sizeof(cfg->service_name);
-        nvs_get_str(nvs_handle, "service_name", cfg->service_name, &len);
-        uint8_t mode_u8;
-        if (nvs_get_u8(nvs_handle, "wifi_mode", &mode_u8) == ESP_OK) {
-            cfg->wifi_mode = (wifi_mode_t)mode_u8;
-        }
-        nvs_close(nvs_handle);
-    } else {
-        ESP_LOGW(TAG, "Failed to open NVS namespace: %s", esp_err_to_name(err));
-    }
-}
-
-/**
- * @brief Write WiFi configuration to NVS flash storage.
- * 
- * Compares the provided configuration with currently saved values and only
- * writes changed settings to minimize flash wear. Commits changes atomically.
- * 
- * @param cfg Pointer to captive_portal_config structure with values to save
- */
-void set_nvs_wifi_settings(captive_portal_config *cfg) {
-    ESP_LOGD(TAG, "Writing NVS WiFi settings...");
-    int8_t n = 0;
-    nvs_handle_t nvs_handle;
-    captive_portal_config saved_cfg = {0};
-    fill_captive_portal_config_struct(&saved_cfg);
-    get_nvs_wifi_settings(&saved_cfg);
-    esp_err_t err = nvs_open(NVS_NAMESPACE_WIFI, NVS_READWRITE, &nvs_handle);
-    if (err == ESP_OK) {
-        if (strcmp(cfg->ssid, saved_cfg.ssid) != 0) {
-            nvs_set_str(nvs_handle, "ssid", cfg->ssid);
-            n++;
-        }
-        if (strcmp(cfg->password, saved_cfg.password) != 0) {
-            nvs_set_str(nvs_handle, "password", cfg->password);
-            n++;
-        }
-        if (cfg->authmode != saved_cfg.authmode) {
-            nvs_set_u8(nvs_handle, "authmode", (uint8_t)cfg->authmode);
-            n++;
-        }
-        if (strcmp(cfg->ap_ssid, saved_cfg.ap_ssid) != 0) {
-            nvs_set_str(nvs_handle, "ap_ssid", cfg->ap_ssid);
-            n++;
-        }
-        if (strcmp(cfg->ap_password, saved_cfg.ap_password) != 0) {
-            nvs_set_str(nvs_handle, "ap_password", cfg->ap_password);
-            n++;
-        }
-        if (cfg->use_static_ip != saved_cfg.use_static_ip) {
-            nvs_set_u8(nvs_handle, "use_static_ip", (uint8_t)cfg->use_static_ip);
-            n++;
-        }
-        if (cfg->use_mDNS != saved_cfg.use_mDNS) {
-            nvs_set_u8(nvs_handle, "use_mDNS", (uint8_t)cfg->use_mDNS);
-            n++;
-        }
-        if (cfg->static_ip.addr != saved_cfg.static_ip.addr) {
-            nvs_set_u32(nvs_handle, "static_ip", cfg->static_ip.addr);
-            n++;
-        }
-        if (strcmp(cfg->mDNS_hostname, saved_cfg.mDNS_hostname) != 0) {
-            nvs_set_str(nvs_handle, "mDNS_hostname", cfg->mDNS_hostname);
-            n++;
-        }
-        if (strcmp(cfg->service_name, saved_cfg.service_name) != 0) {
-            nvs_set_str(nvs_handle, "service_name", cfg->service_name);
-            n++;
-        }
-        if (cfg->wifi_mode != saved_cfg.wifi_mode) {
-            nvs_set_u8(nvs_handle, "wifi_mode", (uint8_t)cfg->wifi_mode);
-            n++;
-        }
-        nvs_commit(nvs_handle);
-        nvs_close(nvs_handle);
-        ESP_LOGD(TAG, "NVS WiFi settings written, %d changes made", n);
-    } else {
-        ESP_LOGW(TAG, "Failed to open NVS namespace: %s", esp_err_to_name(err));
-    }
-}
 
 /**
  * @brief Copy src into dst, escaping JSON-special characters.
@@ -258,6 +91,7 @@ esp_err_t captive_error_redirect(httpd_req_t *req, httpd_err_code_t error) {
     return ESP_OK;
 }
 
+#if CONFIG_WIFI_ENABLE_STA_MODE
 /**
  * @brief HTTP handler for scanning available WiFi networks and returning JSON results.
  */
@@ -321,6 +155,15 @@ esp_err_t scan_json_handler(httpd_req_t *req) {
     ESP_LOGD(TAG, "Scan results sent: %d APs", ap_count);
     return ESP_OK;
 }
+#else
+esp_err_t scan_json_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_send(req, "{\"ap_count\": 0, \"aps\": []}", HTTPD_RESP_USE_STRLEN);
+    ESP_LOGW(TAG, "Scan handler called but STA mode is disabled, returning empty results");
+    return ESP_OK;
+}
+#endif // CONFIG_WIFI_ENABLE_STA_MODE
 
 /**
  * @brief HTTP handler for returning saved captive portal configuration as JSON.
@@ -388,7 +231,7 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
     bool do_switch_ap = false;
     bool ssid_changed = false;
     wifi_mode_t mode;
-    ESP_ERROR_CHECK(esp_wifi_get_mode(&mode));
+    ESP_RETURN_ON_ERROR(esp_wifi_get_mode(&mode), TAG, "Failed to get WiFi mode");
     ESP_LOGI(TAG, "Received POST request to update WiFi settings");
 
     if (s_cfg_mutex) xSemaphoreTake(s_cfg_mutex, portMAX_DELAY);
@@ -768,7 +611,7 @@ esp_err_t wifi_start_captive() {
 
 esp_err_t wifi_init_captive() {
     esp_log_level_set(TAG, CONFIG_LOG_LEVEL_WIFI);
-    ESP_LOGI(TAG, "Initializing WiFi in captive portal mode...");
+    ESP_LOGI(TAG, "Initializing WiFi captive portal module...");
     fill_captive_portal_config_struct(&captive_cfg);
 
     // Create mutex protecting captive_cfg before any task can use it
@@ -777,15 +620,6 @@ esp_err_t wifi_init_captive() {
         ESP_LOGE(TAG, "Failed to create config mutex");
         return ESP_ERR_NO_MEM;
     }
-    
-    // Initialize NVS
-    ESP_LOGI(TAG, "Initializing NVS...");
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_RETURN_ON_ERROR(ret, TAG, "Failed to initialize NVS");
 
     // Read NVS settings (no mutex needed: listener task not started yet)
     get_nvs_wifi_settings(&captive_cfg);

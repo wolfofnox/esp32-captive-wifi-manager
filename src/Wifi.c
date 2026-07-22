@@ -17,15 +17,17 @@
 #include "SD-mgr.h"
 #include "AP.h"
 #include "STA.h"
+#include "nvs-mgr.h"
 
 #undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_WIFI
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_err.h"
 #include "esp_mac.h"      // for MAC2STR macro
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "led_indicator.h"
+#include "wifi_led.h"
 
 #include <errno.h>
 #include <sys/socket.h>
@@ -61,7 +63,7 @@ enum {
     BLINK_LOADED,               ///< System loaded successfully
     BLINK_WIFI_CONNECTING,      ///< Attempting WiFi connection
     BLINK_WIFI_CONNECTED,       ///< WiFi connected successfully
-    BLINK_WIFI_DISCONNECTED,    ///< WiFi disconnected/failed
+    BLINK_WIFI_ERROR,    ///< WiFi disconnected/failed
     BLINK_WIFI_AP_STARTING,     ///< AP mode starting
     BLINK_WIFI_AP_STARTED,      ///< AP mode active
     BLINK_MAX                   ///< Total number of blink patterns
@@ -112,7 +114,7 @@ static const blink_step_t wifi_connected[] = {
 };
 
 /** @brief LED pattern for WiFi disconnected - 3 quick red blinks */
-static const blink_step_t wifi_disconnected[] = {
+static const blink_step_t wifi_error[] = {
     {LED_BLINK_HSV, SET_HSV(0, MAX_SATURATION, 0), 0},
     {LED_BLINK_HOLD, LED_STATE_OFF, 100},
     {LED_BLINK_HOLD, LED_STATE_ON, 100},
@@ -153,7 +155,7 @@ const blink_step_t *led_blink_list[BLINK_MAX] = {
     [BLINK_LOADED] = loaded,
     [BLINK_WIFI_CONNECTING] = wifi_connecting,
     [BLINK_WIFI_CONNECTED] = wifi_connected,
-    [BLINK_WIFI_DISCONNECTED] = wifi_disconnected,
+    [BLINK_WIFI_ERROR] = wifi_error,
     [BLINK_WIFI_AP_STARTING] = wifi_ap_starting,
     [BLINK_WIFI_AP_STARTED] = wifi_ap_started
 };
@@ -214,6 +216,7 @@ esp_err_t wifi_init() {
     ESP_LOGI(TAG, "Initializing WiFi...");
 
     // Configure LED indicator
+    #if CONFIG_WIFI_USE_SK6812_STATUS_LED
     led_indicator_strips_config_t led_indicator_strips_cfg = {
         .led_strip_cfg = {
             .strip_gpio_num = CONFIG_PIN_WIFI_STATUS_LED,  ///< GPIO number for the LED strip
@@ -239,6 +242,7 @@ esp_err_t wifi_init() {
     if (led_handle == NULL) {
         ESP_LOGE(TAG, "Failed to create LED indicator");
     }
+    #endif
     
     led_indicator_start(led_handle, BLINK_LOADING); // Start LED indicator with loading animation
     
@@ -249,6 +253,8 @@ esp_err_t wifi_init() {
     } else {
         ESP_LOGW(TAG, "Falling back to basic server, running without SD card support");
     }
+
+    ESP_ERROR_CHECK(init_nvs());
 
     ESP_ERROR_CHECK(server_mgr_init());
 
@@ -265,25 +271,64 @@ esp_err_t wifi_init() {
 
     // Init WiFi with RAM-only storage
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    cfg.nvs_enable = false; // Don't use NVS for WiFi config; I'll handle persistence myself in captive portal code
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    
-    // Configure WiFi to store settings in RAM only
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
-    ESP_ERROR_CHECK(wifi_init_captive());
+    {
+        esp_err_t _rc = wifi_init_captive();
+        if (_rc == ESP_ERR_NOT_SUPPORTED) {
+            ESP_LOGI(TAG, "Captive portal disabled by config");
+        } else if (_rc != ESP_OK) {
+            ESP_LOGW(TAG, "wifi_init_captive() returned error: %s", esp_err_to_name(_rc));
+        }
+    }
 
-    // Decide startup mode based on saved wifi_mode and STA config
+    /* Decide startup mode based on saved wifi_mode and STA config.
+     * Be resilient to stubs returning errors: prefer STA if configured,
+     * then captive AP, then plain AP. */
     wifi_config_t wifi_cfg;
-    get_sta_wifi_config(&wifi_cfg);
-    if (get_wifi_mode() == WIFI_MODE_AP) {
+    (void)get_sta_wifi_config(&wifi_cfg); /* may return error; still use returned data if any */
+    wifi_mode_t _mode = get_wifi_mode();
+    if (_mode == WIFI_MODE_AP) {
         ESP_LOGI(TAG, "Configured for AP mode, switching to AP...");
         wifi_flags_set_bits(SWITCH_TO_AP_BIT);
-    } else if (strlen((char *)wifi_cfg.sta.ssid) == 0) {
-        ESP_LOGI(TAG, "No STA SSID configured, launching captive portal AP mode...");
-        wifi_flags_set_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+    } else if (_mode == WIFI_MODE_STA) {
+        if (strlen((char *)wifi_cfg.sta.ssid) == 0) {
+            ESP_LOGI(TAG, "STA selected but no SSID saved, launching captive portal AP mode...");
+#if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
+            wifi_flags_set_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+#elif CONFIG_WIFI_ENABLE_AP_MODE
+            wifi_flags_set_bits(SWITCH_TO_AP_BIT);
+#else
+            ESP_LOGW(TAG, "No AP/captive support available to handle empty STA config");
+#endif
+        } else {
+            ESP_LOGI(TAG, "STA SSID configured, switching to STA mode...");
+            wifi_flags_set_bits(SWITCH_TO_STA_BIT);
+        }
     } else {
-        ESP_LOGI(TAG, "STA SSID configured, switching to STA mode...");
-        wifi_flags_set_bits(SWITCH_TO_STA_BIT);
+        /* Unknown or NULL mode from stub — pick a sane default based on build config and saved SSID */
+#if CONFIG_WIFI_ENABLE_STA_MODE
+        if (strlen((char *)wifi_cfg.sta.ssid) > 0) {
+            ESP_LOGI(TAG, "No explicit mode, but STA SSID present — switching to STA");
+            wifi_flags_set_bits(SWITCH_TO_STA_BIT);
+        } else
+#endif
+#if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
+        {
+            ESP_LOGI(TAG, "No explicit mode — launching captive portal AP (fallback)");
+            wifi_flags_set_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+        }
+#elif CONFIG_WIFI_ENABLE_AP_MODE
+        {
+            ESP_LOGI(TAG, "No explicit mode — starting AP (fallback)");
+            wifi_flags_set_bits(SWITCH_TO_AP_BIT);
+        }
+#else
+        {
+            ESP_LOGW(TAG, "No WiFi modes enabled in this build; device will not start any WiFi mode");
+        }
+#endif
     }
 
     // Start WiFi mode switch task
@@ -353,8 +398,8 @@ void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out
 
     if (out_ssid) {
         wifi_config_t sta_config;
-        get_sta_wifi_config(&sta_config);
-        if (connected && strlen((const char*)sta_config.sta.ssid) > 0) {
+        esp_err_t ret = get_sta_wifi_config(&sta_config);
+        if (ret == ESP_OK && connected && strlen((const char*)sta_config.sta.ssid) > 0) {
             size_t len = strlen((const char*)sta_config.sta.ssid) + 1;
             *out_ssid = malloc(len);
             if (*out_ssid) {
@@ -367,8 +412,8 @@ void wifi_get_status(bool *out_connected_to_ap, bool *out_in_ap_mode, char **out
 
     if (out_ap_ssid) {
         wifi_config_t ap_config;
-        get_ap_wifi_config(&ap_config);
-        if (in_ap && strlen((const char*)ap_config.ap.ssid) > 0) {
+        esp_err_t ret = get_ap_wifi_config(&ap_config);
+        if (ret == ESP_OK && in_ap && strlen((const char*)ap_config.ap.ssid) > 0) {
             size_t len = strlen((const char*)ap_config.ap.ssid) + 1;
             *out_ap_ssid = malloc(len);
             if (*out_ap_ssid) {
@@ -450,8 +495,29 @@ void wifi_flags_listener_task(void *pvParameter) {
             esp_wifi_stop();
             wifi_stop_captive(); // Stop DNS server if running
             mdns_free(); // Free mDNS if exists
-            wifi_flags_clear_bits(SWITCH_TO_STA_BIT);
-            wifi_init_sta();
+
+            esp_err_t _rc = wifi_init_sta();
+            if (_rc == ESP_OK) {
+                wifi_flags_clear_bits(SWITCH_TO_STA_BIT);
+            } else if (_rc == ESP_ERR_NOT_SUPPORTED) {
+                led_indicator_stop(led_handle, BLINK_WIFI_CONNECTING);
+                led_indicator_start(led_handle, BLINK_WIFI_ERROR);
+                ESP_LOGW(TAG, "STA mode not supported by this build/config");
+                /* Fallback: prefer captive portal, then AP, then give up. */
+#if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
+                wifi_flags_set_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+#elif CONFIG_WIFI_ENABLE_AP_MODE
+                wifi_flags_set_bits(SWITCH_TO_AP_BIT);
+#else
+                ESP_LOGE(TAG, "No fallback WiFi mode available after STA unsupported");
+#endif
+                wifi_flags_clear_bits(SWITCH_TO_STA_BIT);
+            } else {
+                ESP_LOGW(TAG, "wifi_init_sta() failed: %s", esp_err_to_name(_rc));
+                /* Schedule a reconnect attempt and clear this switch request to avoid busy looping. */
+                wifi_flags_set_bits(RECONECT_BIT);
+                wifi_flags_clear_bits(SWITCH_TO_STA_BIT);
+            }
         }
 
         // Switch to AP mode (no captive hijack)
@@ -465,8 +531,27 @@ void wifi_flags_listener_task(void *pvParameter) {
             esp_wifi_stop();
             wifi_stop_captive(); // Stop DNS server if running
             mdns_free(); // Free mDNS if exists
-            wifi_init_ap();
-            wifi_flags_clear_bits(SWITCH_TO_AP_BIT);
+
+            esp_err_t _rc = wifi_init_ap();
+            if (_rc == ESP_OK) {
+                wifi_flags_clear_bits(SWITCH_TO_AP_BIT);
+            } else if (_rc == ESP_ERR_NOT_SUPPORTED) {
+                led_indicator_stop(led_handle, BLINK_WIFI_AP_STARTING);
+                led_indicator_start(led_handle, BLINK_WIFI_ERROR);
+                ESP_LOGW(TAG, "AP mode not supported by this build/config");
+                /* Fallback: try captive portal or STA. */
+#if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
+                wifi_flags_set_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+#elif CONFIG_WIFI_ENABLE_STA_MODE
+                wifi_flags_set_bits(SWITCH_TO_STA_BIT);
+#else
+                ESP_LOGE(TAG, "No fallback WiFi mode available after AP unsupported");
+#endif
+                wifi_flags_clear_bits(SWITCH_TO_AP_BIT);
+            } else {
+                ESP_LOGW(TAG, "wifi_init_ap() failed: %s", esp_err_to_name(_rc));
+                wifi_flags_clear_bits(SWITCH_TO_AP_BIT);
+            }
         }
 
         // Switch to captive AP mode
@@ -478,9 +563,27 @@ void wifi_flags_listener_task(void *pvParameter) {
             esp_wifi_disconnect();
             esp_wifi_stop();
             mdns_free(); // Free mDNS if exists
-            wifi_start_captive();
 
-            wifi_flags_clear_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+            esp_err_t _rc = wifi_start_captive();
+            if (_rc == ESP_OK) {
+                wifi_flags_clear_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+            } else if (_rc == ESP_ERR_NOT_SUPPORTED) {
+                led_indicator_stop(led_handle, BLINK_WIFI_AP_STARTING);
+                led_indicator_start(led_handle, BLINK_WIFI_ERROR);
+                ESP_LOGW(TAG, "Captive portal not supported by this build/config");
+                /* Fallback: try plain AP or STA. */
+#if CONFIG_WIFI_ENABLE_AP_MODE
+                wifi_flags_set_bits(SWITCH_TO_AP_BIT);
+#elif CONFIG_WIFI_ENABLE_STA_MODE
+                wifi_flags_set_bits(SWITCH_TO_STA_BIT);
+#else
+                ESP_LOGE(TAG, "No fallback WiFi mode available after captive unsupported");
+#endif
+                wifi_flags_clear_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+            } else {
+                ESP_LOGW(TAG, "wifi_start_captive() failed: %s", esp_err_to_name(_rc));
+                wifi_flags_clear_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+            }
         }
 
         // Reconnect in STA mode
@@ -496,14 +599,26 @@ void wifi_flags_listener_task(void *pvParameter) {
             wifi_flags_clear_bits(RECONECT_BIT);
 
             wifi_config_t wifi_cfg;
-            get_sta_wifi_config(&wifi_cfg);
+            esp_err_t _rc = get_sta_wifi_config(&wifi_cfg);
+            if (_rc != ESP_OK) {
+                ESP_LOGW(TAG, "get_sta_wifi_config() failed during reconnect: %s", esp_err_to_name(_rc));
+                /* Fallback to other modes if available */
+#if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
+                wifi_flags_set_bits(SWITCH_TO_CAPTIVE_AP_BIT);
+#elif CONFIG_WIFI_ENABLE_AP_MODE
+                wifi_flags_set_bits(SWITCH_TO_AP_BIT);
+#endif
+                continue;
+            }
             esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
 
             // Set static or dynamic IP
             esp_netif_dhcpc_stop(sta_netif);
             bool use_static_ip; 
             esp_ip4_addr_t ip_addr;
-            get_static_ip_config(&use_static_ip, &ip_addr);
+            if (get_static_ip_config(&use_static_ip, &ip_addr) != ESP_OK) {
+                use_static_ip = false;
+            }
             if (use_static_ip) {
                 uint32_t new_ip = ntohl(ip_addr.addr);
                 esp_netif_ip_info_t ip_info;
@@ -520,11 +635,16 @@ void wifi_flags_listener_task(void *pvParameter) {
         }
 
         // Update mDNS settings
-        if (eventBits & mDNS_CHANGE_BIT && mode == WIFI_MODE_STA) {
+        if (eventBits & mDNS_CHANGE_BIT) {
             bool use_mDNS;
             char mDNS_hostname[32];
             char service_name[32];
-            get_mdns_config(&use_mDNS, mDNS_hostname, sizeof(mDNS_hostname), service_name, sizeof(service_name));
+            if (get_mdns_config(&use_mDNS, mDNS_hostname, sizeof(mDNS_hostname), service_name, sizeof(service_name)) != ESP_OK) {
+                use_mDNS = false;
+                mDNS_hostname[0] = '\0';
+                service_name[0] = '\0';
+            }
+            mdns_free(); // Free mDNS if exists
             if (use_mDNS) {
                 mdns_init(); // Initialize mDNS if not already done
                 ESP_ERROR_CHECK(mdns_hostname_set(mDNS_hostname));
@@ -533,7 +653,6 @@ void wifi_flags_listener_task(void *pvParameter) {
                 ESP_LOGD(TAG, "mDNS service name updated: %s", service_name);
                 mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0); // Add mDNS service if not already done
             } else {
-                mdns_free(); // Free mDNS if exists
                 ESP_LOGD(TAG, "mDNS removed");
             }
             wifi_flags_clear_bits(mDNS_CHANGE_BIT);
@@ -586,25 +705,31 @@ void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id
         wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t *)event_data;
         ESP_LOGI(TAG, "Connected to AP: %s", event->ssid);
         wifi_flags_set_bits(CONNECTED_BIT);
+        #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
         sta_fails_count = 0;
+        #endif
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         led_indicator_stop(led_handle, BLINK_WIFI_CONNECTING);
         led_indicator_stop(led_handle, BLINK_WIFI_CONNECTED);
-        led_indicator_start(led_handle, BLINK_WIFI_DISCONNECTED);
+        led_indicator_start(led_handle, BLINK_WIFI_ERROR);
         if ((bits & RECONECT_BIT) == 0 && mode == WIFI_MODE_STA && (bits & SWITCH_TO_CAPTIVE_AP_BIT) == 0) {
             ESP_LOGW(TAG, "Wi-Fi disconnected, reconnecting...");
+            #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
             sta_fails_count++;
             if (sta_fails_count >= CONFIG_WIFI_MAX_RECONNECTS) {
-                ESP_LOGW(TAG, "Max STA reconect fails reached, switching to AP mode...");
+                ESP_LOGW(TAG, "Max STA reconnect fails reached, switching to AP mode...");
                 esp_wifi_disconnect();
                 sta_fails_count = 0;
                 wifi_flags_set_bits(SWITCH_TO_CAPTIVE_AP_BIT);
                 return;
             } else {
+            #endif
                 ESP_LOGD(TAG, "Reconnecting...");
                 esp_wifi_connect();
                 led_indicator_start(led_handle, BLINK_WIFI_CONNECTING);
+            #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
             }
+            #endif
         } else {
             ESP_LOGI(TAG, "Wi-Fi disconnected.");
         } 

@@ -1,6 +1,92 @@
-idf_component_register(
-    SRCS "src/Wifi.c" "include/dns_server/dns_server.c" "src/Flags.c" "src/Captive.c" "src/Server-mgr.c" "src/Runtime-handlers.c" "src/SD-mgr.c" "src/AP.c" "src/STA.c" "src/ws_server.c"
-    INCLUDE_DIRS include include/dns_server/include
-    REQUIRES esp_wifi esp_event nvs_flash esp_http_server lwip mdns led_indicator fatfs cjson
-    EMBED_FILES src/captive.html
+set(srcs
+    "src/Wifi.c"
+    "src/Flags.c"
+    "src/Server-mgr.c"
+    "src/Runtime-handlers.c"
+    "src/nvs-mgr.c"
 )
+
+set(includes
+    "include"
+)
+
+set(reqs "esp_wifi" "esp_event" "nvs_flash" "esp_http_server" "lwip" "mdns" "cjson")
+
+if(CONFIG_WIFI_ENABLE_WS_RAP)
+list(APPEND srcs "src/ws_server.c")
+endif()
+
+if(CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL)
+    list(APPEND srcs "src/Captive.c")
+    list(APPEND srcs "include/dns_server/dns_server.c")
+    list(APPEND includes "include/dns_server/include")
+endif()
+
+if(CONFIG_WIFI_ENABLE_AP_MODE)
+    list(APPEND srcs "src/AP.c")
+endif()
+
+if(CONFIG_WIFI_ENABLE_STA_MODE)
+    list(APPEND srcs "src/STA.c")
+endif()
+
+if(CONFIG_WIFI_USE_SK6812_STATUS_LED)
+    list(APPEND reqs "led_indicator")
+endif()
+
+if(CONFIG_WIFI_ENABLE_SD)
+    list(APPEND srcs "src/SD-mgr.c")
+    list(APPEND reqs "fatfs")
+endif()
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+if(CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL)
+    set(TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/src/captive.html")
+    set(OUT "${CMAKE_CURRENT_BINARY_DIR}/captive.html")
+    set(SDKCONFIG "${CMAKE_BINARY_DIR}/config/sdkconfig.h")
+    set(PREPROCESS_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/sdkconfig.preprocess.h")
+    set(SDKCONFIG_ADAPTER "${CMAKE_CURRENT_SOURCE_DIR}/tools/sdkconfig_to_preprocess.py")
+    set(PREPROCESS_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/tools/preprocess.py")
+
+    add_custom_command(
+        OUTPUT "${PREPROCESS_CONFIG}"
+        COMMAND "${Python3_EXECUTABLE}" "${SDKCONFIG_ADAPTER}"
+                "${SDKCONFIG}" "${PREPROCESS_CONFIG}"
+        DEPENDS "${SDKCONFIG}" "${SDKCONFIG_ADAPTER}"
+        COMMENT "Preparing preprocess definitions from sdkconfig.h"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT "${OUT}"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${PREPROCESS_SCRIPT}"
+                -I "${CMAKE_CURRENT_BINARY_DIR}"
+                -f
+                -o "${OUT}"
+                "${TEMPLATE}"
+        DEPENDS
+                "${TEMPLATE}"
+                "${PREPROCESS_CONFIG}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        COMMENT "Preprocessing captive.html -> ${OUT}"
+        VERBATIM
+    )
+
+    add_custom_target(captive_html ALL DEPENDS "${OUT}")
+else()
+    set(OUT "")
+endif()
+
+idf_component_register(
+    SRCS ${srcs}
+    INCLUDE_DIRS ${includes}
+    REQUIRES ${reqs}
+    PRIV_REQUIRES fatfs
+    EMBED_FILES ${OUT}
+)
+
+if(CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL)
+    add_dependencies(${COMPONENT_LIB} captive_html)
+endif()
+

@@ -32,7 +32,11 @@ esp_err_t wifi_init_sta() {
     ESP_LOGI(TAG, "Starting WiFi in station mode...");
     
     wifi_config_t wifi_cfg;
-    get_sta_wifi_config(&wifi_cfg);
+    esp_err_t _rc = get_sta_wifi_config(&wifi_cfg);
+    if (_rc != ESP_OK) {
+        ESP_LOGW(TAG, "get_sta_wifi_config() failed: %s", esp_err_to_name(_rc));
+        return _rc;
+    }
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Failed to set WiFi mode");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "Failed to set WiFi config");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Failed to start WiFi");
@@ -43,7 +47,9 @@ esp_err_t wifi_init_sta() {
     esp_netif_dhcpc_stop(wifi_get_sta_netif());
     bool use_static_ip;
     esp_ip4_addr_t ip_addr;
-    get_static_ip_config(&use_static_ip, &ip_addr);
+    if (get_static_ip_config(&use_static_ip, &ip_addr) != ESP_OK) {
+        use_static_ip = false;
+    }
     if (use_static_ip) {
         uint32_t new_ip = ntohl(ip_addr.addr);
         ip_info.ip.addr = ip_addr.addr;
@@ -68,7 +74,11 @@ esp_err_t wifi_init_sta() {
     bool use_mDNS;
     char mDNS_hostname[32];
     char service_name[32];
-    get_mdns_config(&use_mDNS, mDNS_hostname, sizeof(mDNS_hostname), service_name, sizeof(service_name));
+    if (get_mdns_config(&use_mDNS, mDNS_hostname, sizeof(mDNS_hostname), service_name, sizeof(service_name)) != ESP_OK) {
+        use_mDNS = false;
+        mDNS_hostname[0] = '\0';
+        service_name[0] = '\0';
+    }
     // Start mDNS if enabled
     if (use_mDNS) {
         ESP_RETURN_ON_ERROR(mdns_init(), TAG, "Failed to initialize mDNS");

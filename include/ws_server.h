@@ -1,5 +1,6 @@
-#ifndef WS_SERVER_H
-#define WS_SERVER_H
+#pragma once
+
+
 
 #include "esp_err.h"
 #include "esp_http_server.h"
@@ -81,6 +82,9 @@ typedef struct {
     void              *user_data;
 } ws_in_sub_entry_t;
 
+#ifndef CONFIG_MAX_IN_FLIGHT_MSGS
+#define CONFIG_MAX_IN_FLIGHT_MSGS 8
+#endif
 struct ws_client_ctx {
     bool used;
     uint16_t gen;
@@ -100,6 +104,10 @@ struct ws_client_ctx {
     uint16_t next_sub_id;        /* counter for server-assigned subscription ids */
 };
 
+#if CONFIG_WIFI_ENABLE_WS_RAP
+#if CONFIG_WS_TRANSPORT == 0 || !defined(CONFIG_WS_TRANSPORT) /* sanity check: WS_TRANSPORT must be enabled for WS_RAP to work */
+#error "Websocket needs to be enabled for the custom RAP server to work./nIn menuconfig, please enable the WS_TRANSPORT oprion or disable WIFI_ENABLE_WS_RAP option."
+#endif
 /* ─── Lifecycle ─── */
 
 /** Register callbacks for all WebSocket events. Any callback may be NULL. */
@@ -151,4 +159,56 @@ esp_err_t ws_subscribe(ws_client_handle_t handle, const char *name, cJSON *param
 /** Unsubscribe from a client data stream (sub_id was assigned by the client). */
 esp_err_t ws_unsubscribe(ws_client_handle_t handle, uint16_t sub_id);
 
-#endif // WS_SERVER_H
+#else
+
+esp_err_t ws_register_callbacks(on_open_cb open_cb, on_cmd_cb cmd_cb, on_req_cb req_cb,
+                                 on_sub_cb sub_cb, on_unsub_cb unsub_cb,
+                                 on_close_cb close_cb) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_start_task(void) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_handler(httpd_req_t *req) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_respond(ws_client_handle_t handle, uint32_t req_id, cJSON *payload) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_send_error(ws_client_handle_t handle, uint32_t req_id, const char *error_msg) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_respond_sub(ws_client_handle_t handle, uint32_t req_id, uint16_t sub_id, cJSON *snapshot) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_send_sub_delta(ws_client_handle_t handle, uint16_t sub_id, cJSON *payload) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_send_cmd(ws_client_handle_t handle, const char *name, cJSON *params,
+                       ws_req_cb_t cb, void *user_data) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_send_req(ws_client_handle_t handle, const char *name, cJSON *params,
+                       ws_req_cb_t cb, void *user_data) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_subscribe(ws_client_handle_t handle, const char *name, cJSON *params,
+                        ws_sub_snapshot_cb_t snapshot_cb, ws_sub_delta_cb_t delta_cb,
+                        void *user_data) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t ws_unsubscribe(ws_client_handle_t handle, uint16_t sub_id) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+#endif // CONFIG_WIFI_ENABLE_WS_RAP

@@ -26,15 +26,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-/** @brief Maximum number of client IPs to track for captive portal redirect */
-#define MAX_REDIRECTED_IPS 10
-
-/** @brief Array tracking IPs that have already been redirected to prevent redirect loops */
-static uint32_t redirected_ips[MAX_REDIRECTED_IPS];
-
-/** @brief Number of IPs currently tracked in redirected_ips array */
-static int redirected_count = 0;
-
 static const char *TAG = "Wifi: Runtime-handlers";
 
 /**
@@ -105,15 +96,17 @@ esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     wifi_config_t wifi_cfg;
     char sta_ssid[32];
     if (connected) {
-        get_sta_wifi_config(&wifi_cfg);
-        strncpy(sta_ssid, (const char*)wifi_cfg.sta.ssid, sizeof(sta_ssid) - 1);
-        sta_ssid[sizeof(sta_ssid) - 1] = '\0';
+        if (get_sta_wifi_config(&wifi_cfg) == ESP_OK) {
+            strncpy(sta_ssid, (const char*)wifi_cfg.sta.ssid, sizeof(sta_ssid) - 1);
+            sta_ssid[sizeof(sta_ssid) - 1] = '\0';
+        } else {sta_ssid[0] = '\0';}
     } else {sta_ssid[0] = '\0';}
     char ap_ssid[32];
     if (bits & AP_MODE_BIT) {
-        get_ap_wifi_config(&wifi_cfg);
-        strncpy(ap_ssid, (const char*)wifi_cfg.ap.ssid, sizeof(ap_ssid) - 1);
-        ap_ssid[sizeof(ap_ssid) - 1] = '\0';
+        if (get_ap_wifi_config(&wifi_cfg) == ESP_OK) {
+            strncpy(ap_ssid, (const char*)wifi_cfg.ap.ssid, sizeof(ap_ssid) - 1);
+            ap_ssid[sizeof(ap_ssid) - 1] = '\0';
+        } else {ap_ssid[0] = '\0';}
     } else {ap_ssid[0] = '\0';}
 
     snprintf(json, sizeof(json), "{\"connected\": %s, \"ip\": \"%s\", \"ssid\": \"%s\", \"in_ap_mode\": %s, \"ap_ssid\": \"%s\"}",
@@ -126,32 +119,6 @@ esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     httpd_resp_send(req, json, strlen(json));
     ESP_LOGV(TAG, "WiFi status JSON sent: %s", json);
     return ESP_OK;
-}
-
-/**
- * @brief Check if a client IP has already been redirected to the captive portal.
- * 
- * @param ip Client IP address to check
- * @return true if IP has been redirected previously, false otherwise
- */
-static bool is_ip_redirected(uint32_t ip) {
-    for (int i = 0; i < redirected_count; i++) {
-        if (redirected_ips[i] == ip) return true;
-    }
-    return false;
-}
-
-/**
- * @brief Mark a client IP as having been redirected to the captive portal.
- * 
- * Adds the IP to the redirected IPs list to prevent redirect loops.
- * 
- * @param ip Client IP address to mark
- */
-static void mark_ip_redirected(uint32_t ip) {
-    if (redirected_count < MAX_REDIRECTED_IPS) {
-        redirected_ips[redirected_count++] = ip;
-    }
 }
 
 // Restart from a background task so the HTTP server can finish sending
@@ -181,6 +148,7 @@ esp_err_t restart_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+#if CONFIG_WIFI_ENABLE_SD
 /**
  * @brief HTTP GET handler when SD card is not present. Sends a 503 Service Unavailable response with instructions.
  * 
@@ -193,6 +161,7 @@ esp_err_t no_sd_card_handler(httpd_req_t *req) {
     httpd_resp_send(req, "<h2>SD card not detected</h2>\n<p>Please insert an SD card and <a href=\"/restart\">restart</a> the device</p>", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
+#endif
 
 
 /* Small MIME mapping - extend as needed */
@@ -491,7 +460,6 @@ esp_err_t send_sd_file(httpd_req_t *req, const char *filepath)
  * @brief HTTP handler for serving files from the SD card.
  * 
  * This handler serves files from the SD card mounted at /sdcard. It performs:
- * - Captive portal detection URL handling (redirects first request, returns 204 for subsequent)
  * - Directory index handling (serves index.html for directories)
  * - File extension-based content type detection
  * - Automatic .html extension appending for extensionless paths
@@ -504,99 +472,7 @@ esp_err_t send_sd_file(httpd_req_t *req, const char *filepath)
  */
 esp_err_t sd_file_handler(httpd_req_t *req) {
     ESP_LOGV(TAG, "SD file handler invoked for URI: %s", req->uri);
-    #if FALSE // This seemed to have no effect, temporarily removed, to be looked into later
-    // Handle captive portal detection URLs from various operating systems
-    // Android: /generate_204, /gen_204
-    // iOS: /hotspot-detect.html
-    // Windows: /ncsi.txt, /connecttest.txt
-    // Generic: /success.txt, /redirect, /204
-    if (!strcmp(req->uri, "/generate_204") ||
-        !strcmp(req->uri, "/gen_204") ||
-        !strcmp(req->uri, "/ncsi.txt") ||
-        !strcmp(req->uri, "/connecttest.txt") ||
-        !strcmp(req->uri, "/hotspot-detect.html") ||
-        !strcmp(req->uri, "/success.txt") ||
-        !strcmp(req->uri, "/redirect") ||
-        !strcmp(req->uri, "/204") ||
-        !strcmp(req->uri, "/ipv6check")) {
-        
-        ESP_LOGV(TAG, "Captive portal detection request: %s", req->uri);
-        
-        // Extract client IP address from socket for redirect tracking
-        uint32_t client_ip = 0;
-        int sockfd = httpd_req_to_sockfd(req);
-        
-        if (sockfd >= 0) {
-            struct sockaddr_storage addr;
-            socklen_t addr_len = sizeof(addr);
-            
-            if (getpeername(sockfd, (struct sockaddr *)&addr, &addr_len) == 0) {
-                if (addr.ss_family == AF_INET) {
-                    // IPv4
-                    struct sockaddr_in *addr_in = (struct sockaddr_in *)&addr;
-                    client_ip = addr_in->sin_addr.s_addr;
-                    char ip_str[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &(addr_in->sin_addr), ip_str, INET_ADDRSTRLEN);
-                    ESP_LOGV(TAG, "Client IPv4 obtained: %s (0x%08X)", ip_str, (unsigned int)client_ip);
-                } else if (addr.ss_family == AF_INET6) {
-                    // IPv6 - use hash of last 4 bytes as identifier
-                    struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)&addr;
-                    memcpy(&client_ip, &addr_in6->sin6_addr.s6_addr[12], 4);
-                    char ip_str[INET6_ADDRSTRLEN];
-                    inet_ntop(AF_INET6, &(addr_in6->sin6_addr), ip_str, INET6_ADDRSTRLEN);
-                    ESP_LOGV(TAG, "Client IPv6 obtained: %s (hash: 0x%08X)", ip_str, (unsigned int)client_ip);
-                } else {
-                    ESP_LOGW(TAG, "Unknown address family: %d", addr.ss_family);
-                }
-            } else {
-                ESP_LOGW(TAG, "getpeername failed: errno=%d (%s)", errno, strerror(errno));
-            }
-        } else {
-            ESP_LOGW(TAG, "Invalid socket fd: %d", sockfd);
-        }
-        
-        // Determine response based on request type and redirect tracking
-        // For Microsoft NCSI (Windows) - return the exact expected content
-        if (!strcmp(req->uri, "/ncsi.txt") || !strcmp(req->uri, "/connecttest.txt")) {
-            httpd_resp_set_type(req, "text/plain");
-            httpd_resp_send(req, "Microsoft NCSI", HTTPD_RESP_USE_STRLEN);
-            return ESP_OK;
-        }
-        
-        // First request from this IP: redirect to portal to open popup/browser
-        // Subsequent requests from same IP: return 204 to indicate internet connectivity
-        if ((client_ip != 0 && !is_ip_redirected(client_ip))||!strcmp(req->uri, "/redirect")) {
-            mark_ip_redirected(client_ip);
-            
-            char location[64];
-            bool use_mDNS;
-            char mDNS_hostname[32];
-            char service_name[32];
-            get_mdns_config(&use_mDNS, mDNS_hostname, sizeof(mDNS_hostname), service_name, sizeof(service_name));            
-            if (use_mDNS) {
-                snprintf(location, sizeof(location), "http://%s.local/", mDNS_hostname);
-            } else {
-                esp_netif_ip_info_t ip_info;
-                esp_netif_get_ip_info(wifi_get_ap_netif(), &ip_info);
-                char ip_addr[16];
-                inet_ntoa_r(ip_info.ip.addr, ip_addr, 16);
-                snprintf(location, sizeof(location), "http://%s/", ip_addr);
-            }
-            
-            httpd_resp_set_status(req, "302 Found");
-            httpd_resp_set_hdr(req, "Location", location);
-            httpd_resp_send(req, NULL, 0);
-            ESP_LOGI(TAG, "First captive detection, redirecting to %s", location);
-            return ESP_OK;
-        }
-        
-        // Subsequent requests: return 204
-        httpd_resp_set_status(req, "204 No Content");
-        httpd_resp_send(req, NULL, 0);
-        return ESP_OK;
-    }
-    #endif
-
+   
     #if CONFIG_WIFI_SD_FILE_SERVING_MODE_SPA
     bool is_navigation_request = true;
     const char *last_slash = strrchr(req->uri, '/');
@@ -624,7 +500,6 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
         
         esp_err_t r = send_sd_file(req, "/index.html");
         if (r != ESP_OK) {
-            ESP_LOGD(TAG, "Served index.html for navigation request");
             return not_found_handler(req, HTTPD_404_NOT_FOUND);
         }
         return ESP_OK;
@@ -669,8 +544,10 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
     
     ESP_RETURN_ON_ERROR(server_mgr_register_err_handler(HTTPD_404_NOT_FOUND, not_found_handler), TAG, "Failed to register 404 handler");
 
+    #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
     // Register captive portal HTTP handlers (on /captive_portal for STA mode)
     ESP_RETURN_ON_ERROR(register_captive_portal_handlers(), TAG, "Failed to register captive portal handlers");
+    #endif
 
     httpd_uri_t index_html_uri = {
         .uri = "/index.html",
@@ -693,6 +570,7 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
     };
     ESP_RETURN_ON_ERROR(server_mgr_register_handler(&restart_uri), TAG, "Failed to register /restart handler");
 
+    #if CONFIG_WIFI_ENABLE_SD
     if (sd_card_present) {
         // Register custom handlers
         ESP_RETURN_ON_ERROR(register_custom_http_handlers(), TAG, "Failed to register custom HTTP handlers");
@@ -714,7 +592,6 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
         #endif
 
     } else {
-        // need to run wildcard handler even if no SD card to have captive redirect in AP mode
         httpd_uri_t no_sd_card_uri = {
             .uri = "/*",
             .method = HTTP_GET,
@@ -722,5 +599,6 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
         };
         ESP_RETURN_ON_ERROR(server_mgr_register_handler(&no_sd_card_uri), TAG, "Failed to register /* handler for no SD card");
     }
+    #endif
     return ESP_OK;
 }

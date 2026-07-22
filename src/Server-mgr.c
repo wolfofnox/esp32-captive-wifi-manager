@@ -130,6 +130,7 @@ esp_err_t wifi_register_http_handler(httpd_uri_t *uri) {
             ESP_LOGD(TAG, "Custom handler %s stored, will register when switching to STA/AP mode", uri->uri);
         }
     }
+    ESP_LOGD(TAG, "Custom handler %s stored and registered", uri->uri);
     return ESP_OK;
 }
 
@@ -144,12 +145,16 @@ esp_err_t wifi_register_http_handler(httpd_uri_t *uri) {
 esp_err_t register_custom_http_handlers() {
     if (server == NULL) return ESP_ERR_INVALID_STATE;
     esp_err_t ret = ESP_OK;
+    uint8_t num_registerd = 0;
     for (size_t i = 0; i < custom_handler_count; ++i) {
         esp_err_t err = httpd_register_uri_handler(server, &custom_handlers[i]);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to register custom handler for %s: %s", custom_handlers[i].uri, esp_err_to_name(err));
             ret = err;
+        } else {
+            num_registerd++;
         }
     }
+    ESP_LOGD(TAG, "Registered %d custom handlers", num_registerd);
     return ret;
 }

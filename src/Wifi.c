@@ -63,7 +63,7 @@ enum {
     BLINK_LOADED,               ///< System loaded successfully
     BLINK_WIFI_CONNECTING,      ///< Attempting WiFi connection
     BLINK_WIFI_CONNECTED,       ///< WiFi connected successfully
-    BLINK_WIFI_DISCONNECTED,    ///< WiFi disconnected/failed
+    BLINK_WIFI_ERROR,    ///< WiFi disconnected/failed
     BLINK_WIFI_AP_STARTING,     ///< AP mode starting
     BLINK_WIFI_AP_STARTED,      ///< AP mode active
     BLINK_MAX                   ///< Total number of blink patterns
@@ -114,7 +114,7 @@ static const blink_step_t wifi_connected[] = {
 };
 
 /** @brief LED pattern for WiFi disconnected - 3 quick red blinks */
-static const blink_step_t wifi_disconnected[] = {
+static const blink_step_t wifi_error[] = {
     {LED_BLINK_HSV, SET_HSV(0, MAX_SATURATION, 0), 0},
     {LED_BLINK_HOLD, LED_STATE_OFF, 100},
     {LED_BLINK_HOLD, LED_STATE_ON, 100},
@@ -155,7 +155,7 @@ const blink_step_t *led_blink_list[BLINK_MAX] = {
     [BLINK_LOADED] = loaded,
     [BLINK_WIFI_CONNECTING] = wifi_connecting,
     [BLINK_WIFI_CONNECTED] = wifi_connected,
-    [BLINK_WIFI_DISCONNECTED] = wifi_disconnected,
+    [BLINK_WIFI_ERROR] = wifi_error,
     [BLINK_WIFI_AP_STARTING] = wifi_ap_starting,
     [BLINK_WIFI_AP_STARTED] = wifi_ap_started
 };
@@ -500,6 +500,8 @@ void wifi_flags_listener_task(void *pvParameter) {
             if (_rc == ESP_OK) {
                 wifi_flags_clear_bits(SWITCH_TO_STA_BIT);
             } else if (_rc == ESP_ERR_NOT_SUPPORTED) {
+                led_indicator_stop(led_handle, BLINK_WIFI_CONNECTING);
+                led_indicator_start(led_handle, BLINK_WIFI_ERROR);
                 ESP_LOGW(TAG, "STA mode not supported by this build/config");
                 /* Fallback: prefer captive portal, then AP, then give up. */
 #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
@@ -534,6 +536,8 @@ void wifi_flags_listener_task(void *pvParameter) {
             if (_rc == ESP_OK) {
                 wifi_flags_clear_bits(SWITCH_TO_AP_BIT);
             } else if (_rc == ESP_ERR_NOT_SUPPORTED) {
+                led_indicator_stop(led_handle, BLINK_WIFI_AP_STARTING);
+                led_indicator_start(led_handle, BLINK_WIFI_ERROR);
                 ESP_LOGW(TAG, "AP mode not supported by this build/config");
                 /* Fallback: try captive portal or STA. */
 #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
@@ -564,6 +568,8 @@ void wifi_flags_listener_task(void *pvParameter) {
             if (_rc == ESP_OK) {
                 wifi_flags_clear_bits(SWITCH_TO_CAPTIVE_AP_BIT);
             } else if (_rc == ESP_ERR_NOT_SUPPORTED) {
+                led_indicator_stop(led_handle, BLINK_WIFI_AP_STARTING);
+                led_indicator_start(led_handle, BLINK_WIFI_ERROR);
                 ESP_LOGW(TAG, "Captive portal not supported by this build/config");
                 /* Fallback: try plain AP or STA. */
 #if CONFIG_WIFI_ENABLE_AP_MODE
@@ -705,7 +711,7 @@ void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         led_indicator_stop(led_handle, BLINK_WIFI_CONNECTING);
         led_indicator_stop(led_handle, BLINK_WIFI_CONNECTED);
-        led_indicator_start(led_handle, BLINK_WIFI_DISCONNECTED);
+        led_indicator_start(led_handle, BLINK_WIFI_ERROR);
         if ((bits & RECONECT_BIT) == 0 && mode == WIFI_MODE_STA && (bits & SWITCH_TO_CAPTIVE_AP_BIT) == 0) {
             ESP_LOGW(TAG, "Wi-Fi disconnected, reconnecting...");
             #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL

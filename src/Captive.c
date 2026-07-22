@@ -611,7 +611,7 @@ esp_err_t wifi_start_captive() {
 
 esp_err_t wifi_init_captive() {
     esp_log_level_set(TAG, CONFIG_LOG_LEVEL_WIFI);
-    ESP_LOGI(TAG, "Initializing WiFi in captive portal mode...");
+    ESP_LOGI(TAG, "Initializing WiFi captive portal module...");
     fill_captive_portal_config_struct(&captive_cfg);
 
     // Create mutex protecting captive_cfg before any task can use it

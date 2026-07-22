@@ -500,7 +500,6 @@ esp_err_t sd_file_handler(httpd_req_t *req) {
         
         esp_err_t r = send_sd_file(req, "/index.html");
         if (r != ESP_OK) {
-            ESP_LOGD(TAG, "Served index.html for navigation request");
             return not_found_handler(req, HTTPD_404_NOT_FOUND);
         }
         return ESP_OK;

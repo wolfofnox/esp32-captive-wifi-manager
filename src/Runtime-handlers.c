@@ -148,6 +148,7 @@ esp_err_t restart_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+#if CONFIG_WIFI_ENABLE_SD
 /**
  * @brief HTTP GET handler when SD card is not present. Sends a 503 Service Unavailable response with instructions.
  * 
@@ -157,14 +158,10 @@ esp_err_t restart_handler(httpd_req_t *req) {
 esp_err_t no_sd_card_handler(httpd_req_t *req) {
     httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_set_type(req, "text/html");
-    #if CONFIG_WIFI_ENABLE_SD
     httpd_resp_send(req, "<h2>SD card not detected</h2>\n<p>Please insert an SD card and <a href=\"/restart\">restart</a> the device</p>", HTTPD_RESP_USE_STRLEN);
-    #else
-    httpd_resp_send(req, "<h2>SD card support not enabled</h2>\n<p>This firmware build does not include SD card support. You may register custom handlers or enable SD card support in menuconfig and flash updated firmware.</p>", HTTPD_RESP_USE_STRLEN);
-    #endif
-
     return ESP_OK;
 }
+#endif
 
 
 /* Small MIME mapping - extend as needed */
@@ -574,6 +571,7 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
     };
     ESP_RETURN_ON_ERROR(server_mgr_register_handler(&restart_uri), TAG, "Failed to register /restart handler");
 
+    #if CONFIG_WIFI_ENABLE_SD
     if (sd_card_present) {
         // Register custom handlers
         ESP_RETURN_ON_ERROR(register_custom_http_handlers(), TAG, "Failed to register custom HTTP handlers");
@@ -595,7 +593,6 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
         #endif
 
     } else {
-        // need to run wildcard handler even if no SD card to have captive redirect in AP mode
         httpd_uri_t no_sd_card_uri = {
             .uri = "/*",
             .method = HTTP_GET,
@@ -603,5 +600,6 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
         };
         ESP_RETURN_ON_ERROR(server_mgr_register_handler(&no_sd_card_uri), TAG, "Failed to register /* handler for no SD card");
     }
+    #endif
     return ESP_OK;
 }

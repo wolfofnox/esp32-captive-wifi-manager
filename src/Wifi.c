@@ -629,7 +629,7 @@ void wifi_flags_listener_task(void *pvParameter) {
         }
 
         // Update mDNS settings
-        if (eventBits & mDNS_CHANGE_BIT && mode == WIFI_MODE_STA) {
+        if (eventBits & mDNS_CHANGE_BIT) {
             bool use_mDNS;
             char mDNS_hostname[32];
             char service_name[32];
@@ -638,6 +638,7 @@ void wifi_flags_listener_task(void *pvParameter) {
                 mDNS_hostname[0] = '\0';
                 service_name[0] = '\0';
             }
+            mdns_free(); // Free mDNS if exists
             if (use_mDNS) {
                 mdns_init(); // Initialize mDNS if not already done
                 ESP_ERROR_CHECK(mdns_hostname_set(mDNS_hostname));
@@ -646,7 +647,6 @@ void wifi_flags_listener_task(void *pvParameter) {
                 ESP_LOGD(TAG, "mDNS service name updated: %s", service_name);
                 mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0); // Add mDNS service if not already done
             } else {
-                mdns_free(); // Free mDNS if exists
                 ESP_LOGD(TAG, "mDNS removed");
             }
             wifi_flags_clear_bits(mDNS_CHANGE_BIT);
@@ -699,17 +699,19 @@ void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id
         wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t *)event_data;
         ESP_LOGI(TAG, "Connected to AP: %s", event->ssid);
         wifi_flags_set_bits(CONNECTED_BIT);
+        #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
         sta_fails_count = 0;
+        #endif
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         led_indicator_stop(led_handle, BLINK_WIFI_CONNECTING);
         led_indicator_stop(led_handle, BLINK_WIFI_CONNECTED);
         led_indicator_start(led_handle, BLINK_WIFI_DISCONNECTED);
         if ((bits & RECONECT_BIT) == 0 && mode == WIFI_MODE_STA && (bits & SWITCH_TO_CAPTIVE_AP_BIT) == 0) {
             ESP_LOGW(TAG, "Wi-Fi disconnected, reconnecting...");
-            sta_fails_count++;
             #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
+            sta_fails_count++;
             if (sta_fails_count >= CONFIG_WIFI_MAX_RECONNECTS) {
-                ESP_LOGW(TAG, "Max STA reconect fails reached, switching to AP mode...");
+                ESP_LOGW(TAG, "Max STA reconnect fails reached, switching to AP mode...");
                 esp_wifi_disconnect();
                 sta_fails_count = 0;
                 wifi_flags_set_bits(SWITCH_TO_CAPTIVE_AP_BIT);

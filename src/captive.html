@@ -1,3 +1,4 @@
+<!-- #include "sdkconfig.preprocess.h" -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -13,7 +14,7 @@
     select#ssid option{font-size:0.95em}
     .section{margin-bottom:1.5em}
     button{margin-top:1.5em;padding:.7em 2em}
-    #refreshBtn{margin:0;padding:0;font-size:1em;height:1.8em;width:1.8em;min-width:0;border-radius:20%;display:flex;justify-content:center;align-items:center}
+    .refreshBtn{margin:0;padding:0;font-size:1em;height:1.8em;width:1.8em;min-width:0;border-radius:20%;display:flex;justify-content:center;align-items:center}
     .ssid-row{display:flex;gap:.5em;align-items:center}
     .warning{color:orange;margin-top:.5em;font-size:.9em;display:none}
     .warning.red{color:red}
@@ -27,19 +28,28 @@
     <div class="section">
       <label>Wi-Fi Network Settings:</label>
       <div class="section">
+        <!-- #if defined('CONFIG_WIFI_ENABLE_AP_MODE') and defined('CONFIG_WIFI_ENABLE_STA_MODE') -->
         <label for="wifi_mode">Wi-Fi Mode:</label>
         <select id="wifi_mode" name="wifi_mode" required onchange="toggleMode(this.value)">
           <option value=1 selected>Station (Connect to Wi-Fi)</option>
           <option value=2>Access Point (Create Wi-Fi)</option>
         </select>
+        <!-- #elif defined('CONFIG_WIFI_ENABLE_AP_MODE') -->
+        <label>Wi-Fi Mode: Access Point (AP mode only)</label>
+        <!-- #elif defined('CONFIG_WIFI_ENABLE_STA_MODE') -->
+        <label>Wi-Fi Mode: Station (STA mode only)</label>  
+        <!-- #else -->
+        <div class="warning red">⚠️ No Wi-Fi modes enabled in firmware. Please enable at least one mode and rebuild.</div>
+        <!-- #endif -->
       </div>
+      <!-- #if defined('CONFIG_WIFI_ENABLE_STA_MODE') -->
       <div class="section" id="sta_fields">
         <label for="ssid">Wi-Fi SSID:</label>
         <div class="ssid-row">
           <select id="ssid" name="ssid" required style="flex:1" onchange="updateAuthmode(this)">
             <option value="" disabled selected>Loading...</option>
           </select>
-          <button type="button" id="refreshBtn" title="Refresh Wi-Fi list" onclick="getSSIDs(loadedSSID,loadedAuthmode)">⟳</button>
+          <button type="button" class="refreshBtn" title="Refresh Wi-Fi list" onclick="getSSIDs(loadedSSID,loadedAuthmode)">⟳</button>
         </div>
         <div id="scanWarn" class="warning red">⚠️ Wi-Fi scan failed. Please enter SSID manually if needed.</div>
         <div id="enterpriseWarn" class="warning">⚠️ Enterprise networks are not supported. Please select a different network.</div>
@@ -49,6 +59,8 @@
         </div>
         <input type="hidden" id="authmode" name="authmode" value="">
       </div>
+      <!-- #endif -->
+      <!-- #if defined('CONFIG_WIFI_ENABLE_AP_MODE') -->
       <div class="section" id="ap_fields" style="display:none">
         <label for="ap_ssid">AP SSID:</label>
         <input type="text" id="ap_ssid" name="ap_ssid" placeholder="ESP32-AP">
@@ -56,6 +68,7 @@
         <input type="password" id="ap_password" name="ap_password" placeholder="Leave empty for open network">
         <small style="color:#666;font-size:0.85em">Min 8 characters or empty for open</small>
       </div>
+      <!-- #endif -->
     </div>
     <div class="section">
       <label><input type="checkbox" id="use_static_ip" name="use_static_ip" value="true" onchange="toggle('static_ip_fields',this.checked)">Use Static IP</label>
@@ -80,6 +93,7 @@
     let loadedSSID='';
     let loadedAuthmode=-1;
     function toggle(id,show){g(id).style.display=show?'block':'none'}
+    // #if defined('CONFIG_WIFI_ENABLE_AP_MODE') and defined('CONFIG_WIFI_ENABLE_STA_MODE')
     function toggleMode(mode){
       mode = Number(mode);
       toggle('sta_fields',mode===1);
@@ -88,6 +102,8 @@
       g('ap_ssid').required=mode===2;
       console.log('toggleMode: mode='+mode);
     }
+    // #endif
+    // #if defined('CONFIG_WIFI_ENABLE_STA_MODE')
     function updateAuthmode(sel){
       const pwd=g('password'),pwdfld=g('password_field'),ent=g('enterpriseWarn'),btn=g('saveBtn'),auth=g('authmode');
       if(sel.type.toLowerCase()==='input'){
@@ -190,6 +206,7 @@
           g('scanWarn').style.display='block';
         });
     }
+    // #endif
     function loadSettings(){
       console.log('loadSettings: fetching captive.json');
       g('dataWarn').style.display='none';
@@ -221,7 +238,9 @@
           getSSIDs('',-1);
         });
     }
+    // #if defined('CONFIG_WIFI_ENABLE_STA_MODE')
     window.onload=()=>{updateAuthmode(g('ssid'));loadSettings()};
+    // #endif
   </script>
 </body>
 </html>

@@ -10,6 +10,7 @@ set(includes
     "include"
 )
 
+set(reqs "esp_wifi" "esp_event" "nvs_flash" "esp_http_server" "lwip" "mdns" "cjson")
 
 if(CONFIG_WIFI_ENABLE_WS_RAP)
 list(APPEND srcs "src/ws_server.c")
@@ -29,7 +30,6 @@ if(CONFIG_WIFI_ENABLE_STA_MODE)
     list(APPEND srcs "src/STA.c")
 endif()
 
-set(reqs "esp_wifi" "esp_event" "nvs_flash" "esp_http_server" "lwip" "mdns" "cjson")
 if(CONFIG_WIFI_USE_SK6812_STATUS_LED)
     list(APPEND reqs "led_indicator")
 endif()
@@ -39,8 +39,43 @@ if(CONFIG_WIFI_ENABLE_SD)
     list(APPEND reqs "fatfs")
 endif()
 
-if (CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL)
-set(EMBED_FILES "src/captive.html")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+if(CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL)
+    set(TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/src/captive.html")
+    set(OUT "${CMAKE_CURRENT_BINARY_DIR}/captive.html")
+    set(SDKCONFIG "${CMAKE_BINARY_DIR}/config/sdkconfig.h")
+    set(PREPROCESS_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/sdkconfig.preprocess.h")
+    set(SDKCONFIG_ADAPTER "${CMAKE_CURRENT_SOURCE_DIR}/tools/sdkconfig_to_preprocess.py")
+    set(PREPROCESS_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/tools/preprocess.py")
+
+    add_custom_command(
+        OUTPUT "${PREPROCESS_CONFIG}"
+        COMMAND "${Python3_EXECUTABLE}" "${SDKCONFIG_ADAPTER}"
+                "${SDKCONFIG}" "${PREPROCESS_CONFIG}"
+        DEPENDS "${SDKCONFIG}" "${SDKCONFIG_ADAPTER}"
+        COMMENT "Preparing preprocess definitions from sdkconfig.h"
+        VERBATIM
+    )
+
+    add_custom_command(
+        OUTPUT "${OUT}"
+        COMMAND "${Python3_EXECUTABLE}" -X utf8 "${PREPROCESS_SCRIPT}"
+                -I "${CMAKE_CURRENT_BINARY_DIR}"
+                -f
+                -o "${OUT}"
+                "${TEMPLATE}"
+        DEPENDS
+                "${TEMPLATE}"
+                "${PREPROCESS_CONFIG}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        COMMENT "Preprocessing captive.html -> ${OUT}"
+        VERBATIM
+    )
+
+    add_custom_target(captive_html ALL DEPENDS "${OUT}")
+else()
+    set(OUT "")
 endif()
 
 idf_component_register(
@@ -48,6 +83,10 @@ idf_component_register(
     INCLUDE_DIRS ${includes}
     REQUIRES ${reqs}
     PRIV_REQUIRES fatfs
-    EMBED_FILES ${EMBED_FILES}
+    EMBED_FILES ${OUT}
 )
+
+if(CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL)
+    add_dependencies(${COMPONENT_LIB} captive_html)
+endif()
 

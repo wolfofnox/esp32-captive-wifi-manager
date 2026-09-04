@@ -7,33 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased — Big refactor: split Wifi.c into multiple files (PR #43) — 2026-09-04
 
-Summary
 - Large internal refactor that splits the previous monolithic `src/Wifi.c` into multiple, responsibility-separated files:
-  - New sources: src/Captive.c, src/AP.c, src/STA.c, src/Server-mgr.c, src/Runtime-handlers.c, src/Flags.c, src/SD-mgr.c, src/nvs-mgr.c, plus helpers and public headers in include/
+  - New sources: src/Captive.c, src/AP.c, src/STA.c, src/Server-mgr.c, src/Runtime-handlers.c, src/Flags.c, src/SD-mgr.c, src/nvs-mgr.c
+  - New priv_include/ directory for internal headers and helpers
 
-New features
+### Added
+
 - Captive portal preprocessing at build-time (tools/preprocess.py + tools/sdkconfig_to_preprocess.py).
 - New Kconfig options for optional features: WIFI_ENABLE_CAPTIVE_PORTAL, WIFI_ENABLE_AP_MODE, WIFI_ENABLE_STA_MODE, WIFI_ENABLE_WS_RAP, WIFI_ENABLE_SD.
 - SD card file serving with ETag/Last-Modified and SPA/static heuristics.
 - Thread-safety improvements: captive config protected with a mutex; centralized Flags/event group API.
 - Server manager API for registering/re-registering custom HTTP handlers.
 
-Build / dependency changes
+### Changed
+
 - idf_component.yml: added dependency on espressif/cjson.
 - Requires Python3 for captive portal preprocessing step when WIFI_ENABLE_CAPTIVE_PORTAL is enabled.
 
-Breaking changes & migration notes
-- Public types and helpers moved to `include/helpers.h` (e.g. `captive_portal_config`) — update includes accordingly.
-- `url_decode()` and related helpers live in `include/helpers.h` now.
-- Register HTTP handlers via `server_mgr_register_handler()` or `wifi_register_http_handler()` so handlers persist across server restarts/mode changes.
-- `/wifi-status.json` handler is marked deprecated; prefer `wifi_get_status()` and server manager APIs for status reporting.
+### Deprecated
 
-Deprecations
 - `/wifi-status.json` (wifi_status_json_handler) — use wifi_get_status() + custom handler if needed.
 
-Notes
+### Migration notes
 - If enabling captive portal, ensure Python3 is available on the build host (CMake will run tools/preprocess.py).
-- When enabling SD support, configure SD SPI pins in menuconfig and ensure FATFS (`fatfs`) is available.
 
 
 ## [v0.2.1] - 2025-11-16

@@ -30,6 +30,12 @@ The ESP32 Captive WiFi Manager provides an easy-to-use, yet complex solution for
 - **SD Card Support**: Optional SD card integration for file serving
 - **Custom HTTP Handlers**: Register your own HTTP endpoints alongside the captive portal
 
+### WebSocker server
+- **WebSocket Support**: Provides a WebSocket server for real-time communication
+- **RAP.v1 Protocol**: Implements the Realtime Action Protocol (RAP) for JSON-style messaging over WebSocket
+    - Supports bidirectional commands, requests, and subscriptions
+    - Documentation available in `RAP.v1.md` for message structure and usage
+
 ### Network Modes
 
 1. **Station (STA) Mode**: Connects to an existing WiFi network
@@ -46,18 +52,16 @@ idf.py menuconfig
 
 Navigate to: **WiFi Component Configuration**
 
-### Build & configuration notes (short)
-
-- The project was refactored in a recent large change: the previous monolithic Wifi implementation is split into smaller modules and several features are optional and controlled by Kconfig flags.
-  - Key flags: WIFI_ENABLE_CAPTIVE_PORTAL, WIFI_ENABLE_AP_MODE, WIFI_ENABLE_STA_MODE, WIFI_ENABLE_WS_RAP, WIFI_ENABLE_SD
-- When WIFI_ENABLE_CAPTIVE_PORTAL is enabled CMake runs a Python3 preprocessing step (tools/sdkconfig_to_preprocess.py + tools/preprocess.py) to generate an embedded captive.html. Ensure Python 3 is available on the build host.
-- New dependency: idf_component.yml now lists `espressif/cjson`; run `idf.py reconfigure` or otherwise ensure component dependencies are fetched.
-- Migration / API notes (concise):
-  - `captive_portal_config` and several helpers were moved to `include/helpers.h` — update any code that previously included `Wifi.h` for that type.
-  - Register HTTP handlers using `server_mgr_register_handler()` or `wifi_register_http_handler()` so handlers are re-applied when the server restarts or modes switch.
-  - The legacy `/wifi-status.json` handler is deprecated; use `wifi_get_status()` (programmatic) or register your own status endpoint.
-
 ### Available Configuration Options
+
+#### WiFi Modes and Features
+- **Enable STA mode**: Enable/disable Station mode (default: enabled)
+- **Enable AP mode**: Enable/disable Access Point mode (default: enabled)
+- **Enable Captive Portal**: Enable/disable captive portal functionality (default: enabled)
+    - When enabled, ensure Python3 is available on the build host for preprocessing step
+- **Enable WS-RAP (WebSocket Realtime Action Protocol)**: Enable/disable WS-RAP support (default: enabled)
+- **Enable SD card support**: Enable/disable SD card integration (default: disabled)
+
 
 #### Logging
 - **WiFi component log level**: Control verbosity of component logs
@@ -111,6 +115,7 @@ You can override the LED color at any time using `wifi_set_led_rgb()` for custom
 ### Prerequisites
 
 - ESP-IDF v5.5.0 or later
+- Python 3.x (for captive portal preprocessing if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL is enabled)
 - ESP32 development board
 - Basic knowledge of ESP-IDF build system
 
@@ -400,6 +405,7 @@ The component automatically manages these ESP-IDF component dependencies:
 - `mdns`: mDNS service discovery (v1.8.2+)
 - `led_indicator`: LED control (v1.1.1+)
 - `fatfs`: FAT filesystem (for SD card)
+- `cJSON`: JSON parsing and generation
 
 The component also depends on this component, not available in ESP-IDF component registry:
 - `dns_server`: Used for DNS hijacking, by Espressif systems

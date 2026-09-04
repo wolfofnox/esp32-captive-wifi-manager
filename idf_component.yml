@@ -7,3 +7,4 @@ dependencies:
     version: '>=5.5.0'
   espressif/mdns: ^1.8.2
   espressif/led_indicator: ^1.1.1
+  espressif/cjson: ^1.7.19~2

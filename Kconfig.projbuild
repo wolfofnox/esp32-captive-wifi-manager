@@ -31,13 +31,19 @@ config LOG_LEVEL_WIFI
     help
         Internal value for WiFi log level (used in code).
 
+config WIFI_ENABLE_CAPTIVE_PORTAL
+    bool "Use a captive portal configuration page for runtime Wifi configuration"
+    default y
+
 config WIFI_MAX_RECONNECTS
+    depends on WIFI_ENABLE_CAPTIVE_PORTAL
     int "Maximum reconnect attempts before switching to AP captive portal mode"
     default 5
     help
         Maximum reconnect attempts in standard operation mode before switching to AP mode and launching captive portal.
 
 config WIFI_SCAN_MAX_APS
+    depends on WIFI_ENABLE_CAPTIVE_PORTAL
     int "Maximum number of APs to store from a scan"
     default 8
     help
@@ -50,50 +56,109 @@ config WIFI_MAX_CUSTOM_HTTP_HANDLERS
         Maximum number of custom HTTP handlers that can be registered in the WiFi component's HTTP server.
         The total number of URI handlers is the sum of this value and the built-in handlers, which is 8.
 
+config WIFI_ENABLE_AP_MODE
+    bool "Enable Access-Point mode"
+    default n
+    help
+        Enable to run in Access-Point mode.
+        Used if no wifi network is expected, uses more power.
+ 
+config WIFI_ENABLE_STA_MODE
+    bool "Enable Staion mode"
+    default y
+    help
+        Enable to run in station mode and connect to an existing wifi network.
+        This option is prefered.
+    
+config WIFI_ENABLE_WS_RAP
+    bool "Enable WS Realtime Action Protocol"
+    default n
+    help
+        Enable the bundeled custom Realtime Action Protocol for Websocket use.
+        This may use more resources.
+        The menuconfig option 'WS_TRANSPORT' needs to be enabled.
+
+config MAX_WS_CLIENTS
+    depends on WIFI_ENABLE_WS_RAP
+    int "Maximum number of WebSocket clients"
+    default 8
+    help
+        Maximum number of WebSocket clients that can be connected simultaneously.
+
+config MAX_IN_FLIGHT_MSGS
+    depends on WIFI_ENABLE_WS_RAP
+    int "Maximum number of in-flight messages per client"
+    default 6
+    help
+        Maximum number of pending requests that can be sent to a client without receiving responses.
+
+config WS_RX_QUEUE_SIZE
+    depends on WIFI_ENABLE_WS_RAP
+    int "Max WebSocket receive queue length"
+    default 10
+    help
+        Size of the queue for incoming WebSocket messages. Number of unhandled messages that can be queued before new messages are dropped.
+
+config WS_RX_TASK_STACK_SIZE
+    depends on WIFI_ENABLE_WS_RAP
+    int "WebSocket receive task stack size (bytes)"
+    default 4096
+    help
+        Stack size in bytes for the WebSocket receive processing task.
+
+config WS_RX_TASK_PRIORITY
+    depends on WIFI_ENABLE_WS_RAP
+    int "WebSocket receive task priority"
+    default 5
+    help
+        FreeRTOS priority for the WebSocket receive processing task.
+
+config WIFI_ENABLE_SD
+    depends on (WIFI_ENABLE_AP_MODE || WIFI_ENABLE_STA_MODE)
+    bool "Enable SD card (FATFS) support"
+    default y
+    help
+        When enabled, the SD card manager and FAT filesystem support
+        (`fatfs` component) will be included in the build. Disable to
+        exclude SD and save flash/ram.
+
 config PIN_WIFI_SD_MOSI
+    depends on WIFI_ENABLE_SD
     int "SD card MOSI pin"
     default 11
     help
         GPIO pin number for the SD card MOSI line.
 
 config PIN_WIFI_SD_MISO
+    depends on WIFI_ENABLE_SD
     int "SD card MISO pin"
     default 13
     help
         GPIO pin number for the SD card MISO line.
 
 config PIN_WIFI_SD_SCK
+    depends on WIFI_ENABLE_SD
     int "SD card SCK pin"
     default 12
     help
         GPIO pin number for the SD card SCK line.
 
 config PIN_WIFI_SD_CS
+    depends on WIFI_ENABLE_SD
     int "SD card CS pin"
     default 10
     help
         GPIO pin number for the SD card chip select (CS) line.
 
 config WIFI_FORMAT_SD_ON_FAIL
+    depends on WIFI_ENABLE_SD
     bool "Format SD card if mount fails"
     default n
     help
         If enabled, the SD card will be formatted if mounting fails. This is useful for development but should be used with caution in production.
 
-config WIFI_USE_SK6812_STATUS_LED
-    bool "Use SK6812 LED for WiFi status indication"
-    default y
-    help
-        If enabled, an SK6812 LED will be used to indicate WiFi status.
-
-config PIN_WIFI_STATUS_LED
-    depends on WIFI_USE_SK6812_STATUS_LED
-    int "GPIO pin for SK6812 status LED"
-    default 45
-    help
-        GPIO pin number where the SK6812 status LED is connected.
-
 choice WIFI_SD_FILE_SERVING_MODE
+    depends on WIFI_ENABLE_SD
     prompt "SD card file serving mode"
     default WIFI_SD_FILE_SERVING_MODE_STATIC
     help
@@ -111,4 +176,17 @@ config WIFI_SHOW_SPA_404_HINT
     default y
     help
         If enabled, the 404 response for unknown URIs will include a hint about using SPA mode for better handling of single page applications.
+
+config WIFI_USE_SK6812_STATUS_LED
+    bool "Use SK6812 LED for WiFi status indication"
+    default y
+    help
+        If enabled, an SK6812 LED will be used to indicate WiFi status.
+
+config PIN_WIFI_STATUS_LED
+    depends on WIFI_USE_SK6812_STATUS_LED
+    int "GPIO pin for SK6812 status LED"
+    default 45
+    help
+        GPIO pin number where the SK6812 status LED is connected.
 endmenu

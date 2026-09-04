@@ -18,7 +18,7 @@ endif()
 
 if(CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL)
     list(APPEND srcs "src/Captive.c")
-    list(APPEND srcs "priv_include/dns_server/dns_server.c")
+    list(APPEND srcs "include/dns_server/dns_server.c")
     list(APPEND priv_includes "priv_include/dns_server/include")
 endif()
 

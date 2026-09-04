@@ -4,7 +4,7 @@ A comprehensive WiFi management component for ESP32 devices with captive portal 
 
 ## Overview
 
-The ESP32 Captive WiFi Manager provides an easy-to-use, yet complex solution for managing WiFi connectivity on ESP32 devices. It automatically handles WiFi connection attempts, falls back to a captive portal when connection fails, and persists WiFi credentials to NVS (Non-Volatile Storage). This makes it ideal for IoT devices that need user-friendly WiFi configuration without requiring physical access or hardcoded credentials.
+The ESP32 Captive WiFi Manager provides an easy-to-use, yet complex solution for managing WiFi connectivity on ESP32 devices. It automatically handles WiFi connection attempts, falls back to a captive portal when needed, and exposes a small HTTP/WebSocket API for status and control.
 
 ## Use Cases
 
@@ -45,6 +45,17 @@ idf.py menuconfig
 ```
 
 Navigate to: **WiFi Component Configuration**
+
+### Build & configuration notes (short)
+
+- The project was refactored in a recent large change: the previous monolithic Wifi implementation is split into smaller modules and several features are optional and controlled by Kconfig flags.
+  - Key flags: WIFI_ENABLE_CAPTIVE_PORTAL, WIFI_ENABLE_AP_MODE, WIFI_ENABLE_STA_MODE, WIFI_ENABLE_WS_RAP, WIFI_ENABLE_SD
+- When WIFI_ENABLE_CAPTIVE_PORTAL is enabled CMake runs a Python3 preprocessing step (tools/sdkconfig_to_preprocess.py + tools/preprocess.py) to generate an embedded captive.html. Ensure Python 3 is available on the build host.
+- New dependency: idf_component.yml now lists `espressif/cjson`; run `idf.py reconfigure` or otherwise ensure component dependencies are fetched.
+- Migration / API notes (concise):
+  - `captive_portal_config` and several helpers were moved to `include/helpers.h` — update any code that previously included `Wifi.h` for that type.
+  - Register HTTP handlers using `server_mgr_register_handler()` or `wifi_register_http_handler()` so handlers are re-applied when the server restarts or modes switch.
+  - The legacy `/wifi-status.json` handler is deprecated; use `wifi_get_status()` (programmatic) or register your own status endpoint.
 
 ### Available Configuration Options
 

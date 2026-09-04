@@ -5,7 +5,7 @@ All notable changes to the ESP32 Captive WiFi Manager project will be documented
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0/).
 
-## Unreleased — Big refactor: split Wifi.c into multiple files (PR #43) — 2026-09-04
+## [v0.3.0] — 2026-09-04
 
 - Large internal refactor that splits the previous monolithic `src/Wifi.c` into multiple, responsibility-separated files:
   - New sources: src/Captive.c, src/AP.c, src/STA.c, src/Server-mgr.c, src/Runtime-handlers.c, src/Flags.c, src/SD-mgr.c, src/nvs-mgr.c

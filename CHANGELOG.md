@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Captive portal `captive.html` settings load sequence guarded by preprocessing flags, before was trying to write settings into non-existing fields, causing errors in the captive portal UI.
 - Restart handler for `/restart` is now properly registered even in CAPTIVE mode, allowing for remote restarts via the captive portal.
 - Fixed a bug where restarting while CAPTIVE was scanning for wifi would cause a crash due to wrongfully placed ERR_CHECK macro in the scan callback.
+- Fixed a bug where the captive portal would not trigger a connection attempt / AP restart after POST submit if only one of AP/STA was enabled.
 
 ## [v0.3.0] — 2026-09-04
 

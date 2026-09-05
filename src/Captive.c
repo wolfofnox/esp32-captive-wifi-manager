@@ -244,6 +244,7 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         char param[65];
         
         // Parse wifi_mode first
+        #if CONFIG_WIFI_ENABLE_AP_MODE && CONFIG_WIFI_ENABLE_STA_MODE
         if (httpd_query_key_value(buf, "wifi_mode", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
             ESP_LOGV(TAG, "Parsed WiFi Mode: %s", param);
@@ -257,6 +258,22 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
                 ESP_LOGD(TAG, "WiFi mode set to STA, will switch to STA mode");
             }
         }
+        #else
+        #if CONFIG_WIFI_ENABLE_STA_MODE
+        captive_cfg.wifi_mode = WIFI_MODE_STA;
+        if (mode != WIFI_MODE_STA) {
+            do_switch_sta = true;
+            ESP_LOGD(TAG, "WiFi mode set to STA, will switch to STA mode");
+        }
+        #endif
+        #if CONFIG_WIFI_ENABLE_AP_MODE
+        captive_cfg.wifi_mode = WIFI_MODE_AP;
+        if (mode != WIFI_MODE_AP) {
+            do_switch_ap = true;
+            ESP_LOGD(TAG, "WiFi mode set to AP, will switch to AP mode");
+        }
+        #endif
+        #endif
         
         // Parse AP settings
         if (httpd_query_key_value(buf, "ap_ssid", param, sizeof(param)) == ESP_OK) {
@@ -331,6 +348,7 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
         }
         if (httpd_query_key_value(buf, "password", param, sizeof(param)) == ESP_OK) {
             url_decode(param);
+            ESP_LOGV(TAG, "Parsed password, len = %d", strlen(param));
             // Safety: If SSID changed and password is empty, reject the request
             if (ssid_changed && strlen(param) == 0 && captive_cfg.authmode == WIFI_AUTHMODE_WPA_PSK) {
                 ESP_LOGW(TAG, "SSID changed but no password provided for WPA network");
@@ -341,6 +359,7 @@ esp_err_t captive_post_handler(httpd_req_t *req) {
             }
             
             if ((captive_cfg.authmode != WIFI_AUTHMODE_OPEN && strlen(param) != 0 && strcmp((char*)&captive_cfg.password, param) != 0) || captive_cfg.authmode == WIFI_AUTHMODE_INVALID) {
+
                 if (mode == WIFI_MODE_STA) {
                     do_reconnect = true;
                     ESP_LOGD(TAG, "Password changed, reconnecting...");

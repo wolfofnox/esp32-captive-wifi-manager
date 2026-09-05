@@ -7,6 +7,7 @@
 #include "Flags.h"
 #include "SD-mgr.h"
 #include "Wifi.h"
+#include "Common-handlers.h"
 
 #undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL CONFIG_LOG_LEVEL_WIFI
@@ -23,8 +24,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 static const char *TAG = "Wifi: Runtime-handlers";
 
@@ -118,33 +117,6 @@ esp_err_t wifi_status_json_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json, strlen(json));
     ESP_LOGV(TAG, "WiFi status JSON sent: %s", json);
-    return ESP_OK;
-}
-
-// Restart from a background task so the HTTP server can finish sending
-// the response and close the connection gracefully before reboot.
-static void restart_delayed_task(void *pvParameter) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    esp_restart();
-    vTaskDelete(NULL);
-}
-
-/**
- * @brief HTTP GET handler for /restart endpoint (reboots device).
- * 
- * @param req HTTP request handle
- * @return ESP_OK on success
- */
-esp_err_t restart_handler(httpd_req_t *req) {
-    httpd_resp_set_status(req, "302 Found");
-    httpd_resp_send(req, "Restarting...", HTTPD_RESP_USE_STRLEN);
-
-    BaseType_t r = xTaskCreate(restart_delayed_task, "restart_delayed", 2048, NULL, tskIDLE_PRIORITY + 1, NULL);
-    if (r != pdPASS) {
-        // If task creation failed, fall back to delaying in-place (best-effort)
-        esp_restart();
-    }
-
     return ESP_OK;
 }
 
@@ -544,6 +516,8 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
     
     ESP_RETURN_ON_ERROR(server_mgr_register_err_handler(HTTPD_404_NOT_FOUND, not_found_handler), TAG, "Failed to register 404 handler");
 
+    ESP_RETURN_ON_ERROR(register_common_handlers(), TAG, "Failed to register common handlers");
+
     #if CONFIG_WIFI_ENABLE_CAPTIVE_PORTAL
     // Register captive portal HTTP handlers (on /captive_portal for STA mode)
     ESP_RETURN_ON_ERROR(register_captive_portal_handlers(), TAG, "Failed to register captive portal handlers");
@@ -562,13 +536,6 @@ esp_err_t register_runtime_handlers(bool sd_card_present) {
         .handler = wifi_status_json_handler,
     };
     ESP_RETURN_ON_ERROR(server_mgr_register_handler(&wifi_status_json_uri), TAG, "Failed to register /wifi-status.json handler");
-
-    httpd_uri_t restart_uri = {
-        .uri = "/restart",
-        .method = HTTP_POST,
-        .handler = restart_handler
-    };
-    ESP_RETURN_ON_ERROR(server_mgr_register_handler(&restart_uri), TAG, "Failed to register /restart handler");
 
     #if CONFIG_WIFI_ENABLE_SD
     if (sd_card_present) {

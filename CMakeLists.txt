@@ -3,6 +3,7 @@ set(srcs
     "src/Flags.c"
     "src/Server-mgr.c"
     "src/Runtime-handlers.c"
+    "src/Common-handlers.c"
     "src/nvs-mgr.c"
 )
 

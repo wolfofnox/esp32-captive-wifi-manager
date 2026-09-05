@@ -6,6 +6,7 @@
 #include "Flags.h"
 #include "Server-mgr.h"
 #include "nvs-mgr.h"
+#include "Common-handlers.h"
 
 #include "helpers.h"
 
@@ -105,15 +106,15 @@ esp_err_t scan_json_handler(httpd_req_t *req) {
         .scan_time.active.min = 0,
         .scan_time.active.max = 0
     };
-    ESP_ERROR_CHECK(esp_wifi_scan_start(&scan_config, true));
-    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ap_count));
+    ESP_RETURN_ON_ERROR(esp_wifi_scan_start(&scan_config, true), TAG, "Failed to start wifi scan");
+    ESP_RETURN_ON_ERROR(esp_wifi_scan_get_ap_num(&ap_count), TAG, "Failed to retirieve wifi scan number of APs");
     ESP_LOGD(TAG, "Found %d access points", ap_count);
     if (ap_count > CONFIG_WIFI_SCAN_MAX_APS) {
         ap_count = CONFIG_WIFI_SCAN_MAX_APS;
         ESP_LOGD(TAG, "Limiting to %d access points", ap_count);
     }
     wifi_ap_record_t ap_records[CONFIG_WIFI_SCAN_MAX_APS];
-    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&ap_count, ap_records));
+    ESP_RETURN_ON_ERROR(esp_wifi_scan_get_ap_records(&ap_count, ap_records), TAG, "Failed to retrieve wifi scan records");
 
     int len = snprintf(json, sizeof(json), "{\"ap_count\": %d, \"aps\": [", ap_count);
     for (int i = 0; i < ap_count; i++) {
@@ -589,6 +590,13 @@ esp_err_t wifi_start_captive() {
         esp_wifi_stop();
         server_mgr_stop();
         ESP_RETURN_ON_ERROR(err, TAG, "Failed to register captive portal handlers");
+    }
+
+    err = register_common_handlers();
+    if (err != ESP_OK) {
+        esp_wifi_stop();
+        server_mgr_stop();
+        ESP_RETURN_ON_ERROR(err, TAG, "Failed to register common handlers");
     }
 
     err = server_mgr_register_err_handler(HTTPD_404_NOT_FOUND, captive_error_redirect);

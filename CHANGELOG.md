@@ -5,6 +5,12 @@ All notable changes to the ESP32 Captive WiFi Manager project will be documented
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- Captive portal `captive.html` settings load sequence guarded by preprocessing flags, before was trying to write settings into non-existing fields, causing errors in the captive portal UI.
+
 ## [v0.3.0] — 2026-09-04
 
 - Large internal refactor that splits the previous monolithic `src/Wifi.c` into multiple, responsibility-separated files:

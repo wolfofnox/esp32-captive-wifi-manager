@@ -216,12 +216,18 @@
           console.log('loadSettings: loaded config - ssid='+c.ssid+', authmode='+c.authmode+', static_ip='+c.use_static_ip+', mDNS='+c.use_mDNS);
           loadedSSID=c.ssid||'';
           loadedAuthmode=c.authmode!==undefined?c.authmode:-1;
+          // #if defined('CONFIG_WIFI_ENABLE_AP_MODE') and defined('CONFIG_WIFI_ENABLE_STA_MODE')
           if(c.wifi_mode){g('wifi_mode').value=Number(c.wifi_mode);toggleMode(Number(c.wifi_mode))}
+          // #endif
+          // #if defined('CONFIG_WIFI_ENABLE_STA_MODE')
           getSSIDs(c.ssid||'',c.authmode!==undefined?c.authmode:-1);
           if(c.password){g('password').value='';g('password').placeholder='(unchanged)'}
+          // #endif
+          // #if defined('CONFIG_WIFI_ENABLE_AP_MODE')
           g('ap_ssid').value=c.ap_ssid||'';
           g('ap_password').value='';
           if(c.ap_password)g('ap_password').placeholder='(unchanged)';
+          // #endif
           g('use_static_ip').checked=!!c.use_static_ip;
           g('static_ip').value=c.static_ip||'';
           toggle('static_ip_fields',c.use_static_ip);
